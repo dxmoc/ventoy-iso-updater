@@ -721,6 +721,11 @@ def r_endeavouros():
         "https://mirror.moson.org/endeavouros/iso/",
         r'href="(EndeavourOS_[^"]+\.iso)"')
 
+def r_cachyos():
+    return _latest_subdir_iso(
+        "https://mirror.cachyos.org/ISO/desktop/",
+        r'href="(cachyos-desktop-linux-[^"]+\.iso)"',
+        dir_regex=r'href="([\d]{6}/)"')
 
 def r_void():
     return latest_in_listing(
@@ -859,6 +864,7 @@ CATALOG = [
     ("arch",          "Arch Linux",             "Desktop", "standard", "iso", r_arch),
     ("omarchy",       "Omarchy",                "Desktop", "standard", "iso", r_omarchy),
     ("endeavour",     "EndeavourOS",            "Desktop", "advanced", "iso", r_endeavouros),
+    ("cachyos",       "CachyOS",                "Desktop", "advanced", "iso", r_cachyos),
     ("ubuntu_desk26", "Ubuntu 26.04 Desktop",   "Desktop", "standard", "iso", r_ubuntu_desktop_2604),
     ("ubuntu_desk24", "Ubuntu 24.04 Desktop",   "Desktop", "advanced", "iso", r_ubuntu_desktop_2404),
     ("mint",          "Linux Mint Cinnamon",    "Desktop", "standard", "iso", r_mint),
@@ -976,6 +982,7 @@ DESCRIPTIONS = {
     "arch":          "rolling-release, build-it-yourself; text installer",
     "omarchy":       "preconfigured Arch + Hyprland desktop, ready to use",
     "endeavour":     "Arch made easy -- graphical installer, sane defaults",
+    "cachyos":       "Blazingly Fast & Customizable Linux distribution",
     "ubuntu_desk26": "newest Ubuntu, easiest start for beginners",
     "ubuntu_desk24": "previous Ubuntu LTS, supported until 2029",
     "mint":          "beginner-friendly Ubuntu spin, classic Windows-like desktop",
