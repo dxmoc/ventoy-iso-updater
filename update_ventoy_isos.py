@@ -721,11 +721,13 @@ def r_endeavouros():
         "https://mirror.moson.org/endeavouros/iso/",
         r'href="(EndeavourOS_[^"]+\.iso)"')
 
+
 def r_cachyos():
     return _latest_subdir_iso(
         "https://mirror.cachyos.org/ISO/desktop/",
         r'href="(cachyos-desktop-linux-[^"]+\.iso)"',
-        dir_regex=r'href="([\d]{6}/)"')
+        dir_regex=r'href="([\d]{6})/"')
+
 
 def r_void():
     return latest_in_listing(
@@ -982,7 +984,7 @@ DESCRIPTIONS = {
     "arch":          "rolling-release, build-it-yourself; text installer",
     "omarchy":       "preconfigured Arch + Hyprland desktop, ready to use",
     "endeavour":     "Arch made easy -- graphical installer, sane defaults",
-    "cachyos":       "Blazingly Fast & Customizable Linux distribution",
+    "cachyos":       "performance-tuned Arch spin, graphical installer",
     "ubuntu_desk26": "newest Ubuntu, easiest start for beginners",
     "ubuntu_desk24": "previous Ubuntu LTS, supported until 2029",
     "mint":          "beginner-friendly Ubuntu spin, classic Windows-like desktop",
