@@ -76,8 +76,14 @@ security, rescue tools, BSD. Pick a preset
 
 **Downloads with resume support** (HTTP Range), showing the serving host and
 live speed in MB/s and Mbit/s. Where a machine-readable mirror list exists
-(currently Arch), the best-scored mirrors are briefly speed-tested and the
-fastest one is used -- disable with `--no-mirror-test`.
+(Arch, Fedora, and Ubuntu for the country in your OS region settings), a few
+mirrors are briefly speed-tested against the primary and the fastest one is
+used -- disable with `--no-mirror-test`. The SHA-256 always comes from the
+primary; a mirror whose own checksum disagrees is dropped.
+
+**Update notice:** at startup the script asks the GitHub API whether a newer
+release of itself is out and prints a link if so. It downloads and changes
+nothing; offline it stays silent. `--no-update-check` skips the request.
 
 **Windows ISOs** are in no preset, because none of the three ways to get them
 runs unattended. Pick them and the script asks which method to use, spelling out
@@ -131,6 +137,7 @@ are treated as hand-written and left alone, as is the rest of the file.
 | `--preset standard\|advanced\|everything\|custom` | skip the menu |
 | `--cleanup ask\|yes\|no` | what to do with superseded ISOs (default `ask`) |
 | `--no-mirror-test` | skip the fastest-mirror speed test |
+| `--no-update-check` | don't ask GitHub for a newer release at startup |
 | `--windows massgrave\|fido\|uup` | how to obtain the Windows ISOs |
 
 ## Requirements

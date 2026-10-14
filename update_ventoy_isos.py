@@ -56,10 +56,15 @@ uses the Win32 drive type on Windows, the removable flag in /sys on Linux, and
 that setup has .exe interop disabled, falls back to the drvfs mounts under
 /mnt/ with the system drive left out.
 
-For distros that publish a machine-readable mirror list (currently Arch), the
-script briefly speed-tests the best-scored mirrors and downloads from the
-fastest. The other sources are already CDN / geo-routed, so they are used as-is.
-Disable the test with --no-mirror-test.
+For distros that publish a machine-readable mirror list (Arch, Fedora, and
+Ubuntu in your OS region's country), the script briefly speed-tests a few
+mirrors against the primary and downloads from the fastest. Checksums still
+come from the primary. The other sources are already CDN / geo-routed, so they
+are used as-is. Disable the test with --no-mirror-test.
+
+At startup the script asks GitHub whether a newer release of itself is out and
+says so if there is. Nothing is downloaded or changed; --no-update-check skips
+the request.
 
 Windows ISOs are NOT part of any preset -- they cannot be fetched unattended,
 so the script asks separately whether to add them. Say yes and it opens the
@@ -87,6 +92,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import shutil
 import ssl
@@ -407,6 +413,71 @@ def _arch_mirrors(limit=6):
             for m in good[:limit]]
 
 
+MIRROR_RACE_SIZE = 5   # third-party mirrors per speed test, on top of the primary
+
+
+def _country_code():
+    """Two-letter country of this machine from the OS settings, or None.
+
+    Picks the Ubuntu mirrors to race without asking a geo-IP service. Windows
+    has a region setting of its own; elsewhere the locale's territory
+    (de_DE.UTF-8 -> DE) is the best offline hint there is."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(16)
+            if (ctypes.windll.kernel32.GetUserDefaultGeoName(buf, len(buf))
+                    and re.match(r"^[A-Z]{2}$", buf.value)):
+                return buf.value
+        except Exception:
+            pass
+    for var in ("LC_ALL", "LC_MESSAGES", "LANG"):
+        m = re.match(r"^[a-z]{2,3}_([A-Z]{2})", os.environ.get(var, ""))
+        if m:
+            return m.group(1)
+    return None
+
+
+UBUNTU_RELEASES = "https://releases.ubuntu.com/"
+
+
+def _ubuntu_mirrors(primary):
+    """Official Ubuntu release mirrors in this machine's country, as full ISO
+    URLs for the speed test.
+
+    releases.ubuntu.com is a single origin and delivered about half of what a
+    local mirror did in testing. Launchpad lists the mirrors per country; a
+    random sample spreads the load and still lets the race find a fast one.
+    No country, no list -- the primary alone is what ran before."""
+    cc = _country_code()
+    if not cc or not primary.startswith(UBUNTU_RELEASES):
+        return []
+    try:
+        data = json.loads(http_get_cached(
+            "https://api.launchpad.net/devel/ubuntu?ws.op=getBestMirrorsForCountry"
+            "&country=https://api.launchpad.net/devel/%%2Bcountries/%s"
+            "&mirror_type=CD%%20Image" % cc, timeout=15))
+    except Exception:
+        return []
+    # Launchpad sometimes lists the primary itself as a fallback -- it races
+    # anyway, so it would only take a mirror's slot.
+    bases = [m["https_base_url"] for m in data.get("entries", [])
+             if m.get("https_base_url")
+             and urlparse(m["https_base_url"]).netloc
+             != urlparse(UBUNTU_RELEASES).netloc]
+    rest = primary[len(UBUNTU_RELEASES):]
+    return [b.rstrip("/") + "/" + rest
+            for b in random.sample(bases, min(MIRROR_RACE_SIZE, len(bases)))]
+
+
+def _ubuntu_release(series, kind):
+    """Newest point release of one Ubuntu series and edition, plus mirrors."""
+    url, name = latest_in_listing(
+        "%s%s/" % (UBUNTU_RELEASES, series),
+        r'href="(ubuntu-%s(?:\.\d+)*-%s-amd64\.iso)"' % (re.escape(series), kind))
+    return url, name, _ubuntu_mirrors(url)
+
+
 def r_arch():
     # /latest/ always points to the newest snapshot. Primary is the geo CDN;
     # extra candidates come from the mirror-status list for the speed test.
@@ -420,19 +491,41 @@ def r_debian():
         r'href="(debian-[\d.]+-amd64-netinst\.iso)"')
 
 
+FEDORA_RELEASES = "https://mirrors.kernel.org/fedora/releases/"
+
+
 def _fedora_iso(edition, iso_regex):
     """Newest Fedora ISO of one edition (KDE, Workstation, Server, ...).
 
     dl.fedoraproject.org is behind an anti-bot challenge, so the release list
     comes from an open mirror.
     """
-    rel_base = "https://mirrors.kernel.org/fedora/releases/"
     nums = [int(n) for n in re.findall(r'href="(\d+)/"',
-                                       http_get_cached(rel_base))]
+                                       http_get_cached(FEDORA_RELEASES))]
     if not nums:
         raise RuntimeError("could not list Fedora releases")
-    iso_base = "%s%d/%s/x86_64/iso/" % (rel_base, max(nums), edition)
-    return latest_in_listing(iso_base, iso_regex)
+    iso_base = "%s%d/%s/x86_64/iso/" % (FEDORA_RELEASES, max(nums), edition)
+    url, name = latest_in_listing(iso_base, iso_regex)
+    return url, name, _fedora_mirrors(url)
+
+
+def _fedora_mirrors(primary):
+    """Fedora mirrors near this machine, as full ISO URLs for the speed test.
+
+    kernel.org is only the listing source; from Germany it served the ISOs at
+    ~120 KB/s, hours for a single image. MirrorManager geo-locates the caller
+    itself and returns its mirrors best-first, so no country is needed here."""
+    if not primary.startswith(FEDORA_RELEASES):
+        return []
+    path, _, name = primary[len(FEDORA_RELEASES):].rpartition("/")
+    try:
+        text = http_get_cached(
+            "https://mirrors.fedoraproject.org/mirrorlist"
+            "?path=pub/fedora/linux/releases/%s/" % path, timeout=15)
+    except Exception:
+        return []
+    bases = [l.strip() for l in text.splitlines() if l.startswith("https://")]
+    return [b.rstrip("/") + "/" + name for b in bases[:MIRROR_RACE_SIZE]]
 
 
 def r_fedora_kde():
@@ -441,21 +534,15 @@ def r_fedora_kde():
 
 
 def r_ubuntu_server_2404():
-    return latest_in_listing(
-        "https://releases.ubuntu.com/24.04/",
-        r'href="(ubuntu-24\.04(?:\.\d+)*-live-server-amd64\.iso)"')
+    return _ubuntu_release("24.04", "live-server")
 
 
 def r_ubuntu_server_2604():
-    return latest_in_listing(
-        "https://releases.ubuntu.com/26.04/",
-        r'href="(ubuntu-26\.04(?:\.\d+)*-live-server-amd64\.iso)"')
+    return _ubuntu_release("26.04", "live-server")
 
 
 def r_ubuntu_desktop_2604():
-    return latest_in_listing(
-        "https://releases.ubuntu.com/26.04/",
-        r'href="(ubuntu-26\.04(?:\.\d+)*-desktop-amd64\.iso)"')
+    return _ubuntu_release("26.04", "desktop")
 
 
 def r_kali():
@@ -632,9 +719,7 @@ def r_mint():
 
 
 def r_ubuntu_desktop_2404():
-    return latest_in_listing(
-        "https://releases.ubuntu.com/24.04/",
-        r'href="(ubuntu-24\.04(?:\.\d+)*-desktop-amd64\.iso)"')
+    return _ubuntu_release("24.04", "desktop")
 
 
 def _ubuntu_flavour(flavour, edition="desktop", lts=False):
@@ -1401,11 +1486,22 @@ def fetch_tracked(dest, manifest, key, label, url, name, mirrors, args, summary)
         print()
         return
     try:
+        primary = url
         if mirrors and not args.no_mirror_test:
             url = fastest_mirror([url] + mirrors)
-        # Resolve the checksum only after the mirror is settled, so the sums
-        # file comes from the very host that serves the image.
-        expected = None if args.no_verify else remote_sha256(url, name)
+        # The checksum comes from the primary, not from the mirror that won:
+        # the mirror lists include third-party hosts, and a sums file served
+        # next to a tampered image proves nothing. A mirror whose own sums
+        # disagree is stale or worse -- Arch's /latest/ keeps one filename
+        # across releases, so a lagging mirror still answers -- and loses
+        # its win to the primary.
+        expected = None if args.no_verify else remote_sha256(primary, name)
+        if expected and url != primary:
+            theirs = remote_sha256(url, name)
+            if theirs and theirs != expected:
+                print("    %s lists a different checksum (stale?) -- "
+                      "using the primary" % urlparse(url).netloc)
+                url = primary
         if not expected and not args.no_verify:
             print("    no published checksum -- size check only")
         download(url, os.path.join(dest, name), expected)
