@@ -1345,6 +1345,27 @@ def record_version(dest, manifest, label, url, name, meta):
     save_manifest(dest, manifest)
 
 
+REPO = "dxmoc/ventoy-iso-updater"
+
+
+def check_for_update():
+    """Say so when a newer release of this script is out.
+
+    One request to the GitHub API with a short timeout. Offline, rate-limited
+    or anything else unexpected just means no notice -- this must never stand
+    between the user and the run itself."""
+    try:
+        data = json.loads(http_get(
+            "https://api.github.com/repos/%s/releases/latest" % REPO, timeout=5))
+        tag = data["tag_name"]
+    except Exception:
+        return
+    if verkey(tag) > verkey(__version__):
+        print("A newer version is available: %s (you have %s)" % (tag, __version__))
+        print("  %s\n" % data.get("html_url",
+                                  "https://github.com/%s/releases/latest" % REPO))
+
+
 def fetch_tracked(dest, manifest, key, label, url, name, mirrors, args, summary):
     """Update-check -> (mirror race) -> checksum -> download -> record + prune.
     Shared by the Linux ISO loop and the Windows/Fido path. Under --dry-run it
@@ -2155,7 +2176,9 @@ def _relaunch_as_admin():
     try:
         import ctypes
         script = os.path.abspath(sys.argv[0])
-        params = " ".join('"%s"' % a for a in ([script] + sys.argv[1:]))
+        # The update notice was already shown in this window.
+        params = " ".join('"%s"' % a for a in ([script] + sys.argv[1:]
+                                                + ["--no-update-check"]))
         rc = ctypes.windll.shell32.ShellExecuteW(
             None, "runas", sys.executable, params, None, 1)
         return int(rc) > 32
@@ -2838,6 +2861,9 @@ def main():
     ap.add_argument("--no-verify", action="store_true",
                     help="skip the SHA-256 check against the checksum file "
                          "published next to the image")
+    ap.add_argument("--no-update-check", action="store_true",
+                    help="don't ask GitHub at startup whether a newer release "
+                         "of this script is out")
     ap.add_argument("--no-mirror-test", action="store_true",
                     help="skip the fastest-mirror speed test; use the default "
                          "source directly")
@@ -2860,6 +2886,8 @@ def main():
     # Registered here, after parse_args -- so --help/--version, which exit during
     # parsing, stay clean, while every real run gets the send-off on the way out.
     atexit.register(_farewell)
+    if not args.no_update_check:
+        check_for_update()
 
     target = args.dest if args.dest else choose_dest()
     # expanduser first: shells expand a bare ~ before we see it, but cmd.exe and
