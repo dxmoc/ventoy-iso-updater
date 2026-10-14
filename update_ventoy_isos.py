@@ -101,7 +101,7 @@ import webbrowser
 import zipfile
 from urllib.parse import quote, urlencode, urljoin, urlparse
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VentoyISOUpdater/%s" % __version__
 CTX = ssl.create_default_context()
@@ -637,17 +637,23 @@ def r_ubuntu_desktop_2404():
         r'href="(ubuntu-24\.04(?:\.\d+)*-desktop-amd64\.iso)"')
 
 
-def _ubuntu_flavour(flavour, edition="desktop"):
+def _ubuntu_flavour(flavour, edition="desktop", lts=False):
     """Newest *released* ISO of an official Ubuntu flavour from cdimage.
 
     A version directory shows up months before that release is finished --
     while 26.10 is in development its release/ holds only snapshot-N/ subdirs
     and no ISO -- and not every flavour ships every release (Ubuntu MATE
     skipped 26.04). So walk the versions newest-first and take the first one
-    that actually has an image."""
+    that actually has an image.
+
+    lts=True only considers even-year .04 releases. For a flavour that skips
+    an LTS, the interim release it falls back to otherwise goes end-of-life
+    after nine months, while the previous LTS is still supported."""
     base = "https://cdimage.ubuntu.com/%s/releases/" % flavour
-    dirs = sorted(set(re.findall(r'href="([\d.]+)/"', http_get(base))),
-                  key=verkey, reverse=True)
+    dirs = set(re.findall(r'href="([\d.]+)/"', http_get(base)))
+    if lts:
+        dirs = {d for d in dirs if re.match(r"\d*[02468]\.04(\.\d+)*$", d)}
+    dirs = sorted(dirs, key=verkey, reverse=True)
     rgx = r'href="(%s-[\d.]+-%s-amd64\.iso)"' % (re.escape(flavour), edition)
     for d in dirs[:4]:
         try:
@@ -657,10 +663,10 @@ def _ubuntu_flavour(flavour, edition="desktop"):
     raise RuntimeError("no released %s ISO found" % flavour)
 
 
-def _flavour(name, edition="desktop"):
+def _flavour(name, edition="desktop", lts=False):
     """Catalog payload for one Ubuntu flavour -- ten near-identical named
     resolvers would be pure noise."""
-    return lambda: _ubuntu_flavour(name, edition)
+    return lambda: _ubuntu_flavour(name, edition, lts)
 
 
 def r_fedora_ws():
@@ -891,7 +897,7 @@ CATALOG = [
     ("kubuntu",       "Kubuntu",                "Ubuntu flavours", "advanced", "iso", _flavour("kubuntu")),
     ("xubuntu",       "Xubuntu",                "Ubuntu flavours", "advanced", "iso", _flavour("xubuntu")),
     ("lubuntu",       "Lubuntu",                "Ubuntu flavours", "advanced", "iso", _flavour("lubuntu")),
-    ("ubuntu_mate",   "Ubuntu MATE",            "Ubuntu flavours", "extra",    "iso", _flavour("ubuntu-mate")),
+    ("ubuntu_mate",   "Ubuntu MATE",            "Ubuntu flavours", "extra",    "iso", _flavour("ubuntu-mate", lts=True)),
     ("ubuntu_budgie", "Ubuntu Budgie",          "Ubuntu flavours", "extra",    "iso", _flavour("ubuntu-budgie")),
     ("ubuntu_cinn",   "Ubuntu Cinnamon",        "Ubuntu flavours", "extra",    "iso", _flavour("ubuntucinnamon")),
     ("ubuntu_studio", "Ubuntu Studio",          "Ubuntu flavours", "extra",    "iso", _flavour("ubuntustudio")),
@@ -1009,7 +1015,7 @@ DESCRIPTIONS = {
     "kubuntu":       "Ubuntu with KDE Plasma; configurable, Windows-like",
     "xubuntu":       "Ubuntu with Xfce; light and classic, good on older PCs",
     "lubuntu":       "lightest Ubuntu (LXQt); revives weak/old hardware",
-    "ubuntu_mate":   "Ubuntu with MATE, the traditional GNOME 2 desktop",
+    "ubuntu_mate":   "Ubuntu with MATE, the traditional GNOME 2 desktop (LTS)",
     "ubuntu_budgie": "Ubuntu with Budgie; tidy modern desktop, little fuss",
     "ubuntu_cinn":   "Ubuntu with Mint's Cinnamon desktop",
     "ubuntu_studio": "Ubuntu for audio/video/graphics work, low-latency kernel",
