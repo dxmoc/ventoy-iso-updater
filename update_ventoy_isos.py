@@ -353,8 +353,13 @@ def fastest_mirror(urls):
 
 
 def verkey(name):
-    """Sort key from the integers in a filename, so 13.01 > 12.03, etc."""
-    return tuple(int(n) for n in re.findall(r"\d+", name))
+    """Sort key from the version numbers in a filename, so 13.01 > 12.03, etc.
+
+    Each dotted run is its own sub-tuple. A flat tuple of every integer lets
+    whatever follows the version decide: "ubuntu-26.04-desktop-amd64" gave
+    (26, 4, 64), which beats (26, 4, 1, 64) from 26.04.1 because 64 > 1."""
+    return tuple(tuple(int(n) for n in run.split("."))
+                 for run in re.findall(r"\d+(?:\.\d+)*", name))
 
 
 _LISTING_CACHE = {}
@@ -438,19 +443,19 @@ def r_fedora_kde():
 def r_ubuntu_server_2404():
     return latest_in_listing(
         "https://releases.ubuntu.com/24.04/",
-        r'href="(ubuntu-24\.04(?:\.\d+)?-live-server-amd64\.iso)"')
+        r'href="(ubuntu-24\.04(?:\.\d+)*-live-server-amd64\.iso)"')
 
 
 def r_ubuntu_server_2604():
     return latest_in_listing(
         "https://releases.ubuntu.com/26.04/",
-        r'href="(ubuntu-26\.04(?:\.\d+)?-live-server-amd64\.iso)"')
+        r'href="(ubuntu-26\.04(?:\.\d+)*-live-server-amd64\.iso)"')
 
 
 def r_ubuntu_desktop_2604():
     return latest_in_listing(
         "https://releases.ubuntu.com/26.04/",
-        r'href="(ubuntu-26\.04(?:\.\d+)?-desktop-amd64\.iso)"')
+        r'href="(ubuntu-26\.04(?:\.\d+)*-desktop-amd64\.iso)"')
 
 
 def r_kali():
@@ -629,7 +634,7 @@ def r_mint():
 def r_ubuntu_desktop_2404():
     return latest_in_listing(
         "https://releases.ubuntu.com/24.04/",
-        r'href="(ubuntu-24\.04(?:\.\d+)?-desktop-amd64\.iso)"')
+        r'href="(ubuntu-24\.04(?:\.\d+)*-desktop-amd64\.iso)"')
 
 
 def _ubuntu_flavour(flavour, edition="desktop"):
@@ -1426,7 +1431,8 @@ def _version_tokens(rgx, name):
     out of the comparison: "ubuntu-24.04-..-amd64" vs "ubuntu-24.04.3-..-
     amd64" must hinge on 24.04 < 24.04.3, not on the amd64 that follows it."""
     m = rgx.match(name)
-    return None if m is None else tuple(verkey(g) for g in m.groups())
+    return None if m is None else tuple(
+        tuple(n for run in verkey(g) for n in run) for g in m.groups())
 
 
 def _shared_prefix(a, b):

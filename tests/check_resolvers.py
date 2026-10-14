@@ -94,6 +94,24 @@ def check_leap_is_current(mod):
     return False
 
 
+def check_point_releases(mod):
+    """A point release must sort above its base release.
+
+    verkey used to flatten every integer in a filename into one tuple, so the
+    "64" of amd64 outranked the ".1" of 26.04.1 and every Ubuntu resolver kept
+    handing out the .0 image -- again a passing resolver with the wrong answer.
+    """
+    pairs = [("ubuntu-26.04-desktop-amd64.iso", "ubuntu-26.04.1-desktop-amd64.iso"),
+             ("ubuntu-24.04.5-desktop-amd64.iso", "ubuntu-24.04.5.1-desktop-amd64.iso"),
+             ("linuxmint-22-cinnamon-64bit.iso", "linuxmint-22.1-cinnamon-64bit.iso")]
+    bad = [(old, new) for old, new in pairs if not mod.verkey(new) > mod.verkey(old)]
+    for old, new in bad:
+        print("  FAIL verkey         %s does not sort above %s" % (new, old))
+    if not bad:
+        print("  ok   verkey         point releases sort above their base")
+    return not bad
+
+
 def check_catalog_integrity(mod):
     """Every entry needs a unique key and a description line for the picker."""
     keys = [entry[0] for entry in mod.CATALOG]
@@ -127,7 +145,8 @@ def main():
     catalog_ok = check_catalog(mod)
     print("\n=== version sanity ===")
     leap_ok = check_leap_is_current(mod)
-    if integrity_ok and catalog_ok and leap_ok:
+    point_ok = check_point_releases(mod)
+    if integrity_ok and catalog_ok and leap_ok and point_ok:
         return 0
     print("\nSomething upstream changed. Fix the resolver, then rerun.")
     return 1
