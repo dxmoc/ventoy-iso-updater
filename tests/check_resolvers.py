@@ -112,6 +112,38 @@ def check_point_releases(mod):
     return not bad
 
 
+def check_fedora_staged_release(mod):
+    """A Fedora release staged ahead of release day must not break the resolver.
+
+    Fedora 45 appeared in the release list days early with every subdirectory
+    answering 404, and all three Fedora resolvers failed until release day.
+    The previous release is still current then. Offline: the listings are fake.
+    """
+    rel = mod.FEDORA_RELEASES
+    pages = {rel: '<a href="44/"> <a href="45/"> <a href="test/">',
+             rel + "44/KDE/x86_64/iso/":
+                 '<a href="Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso">'}
+
+    def fake_get(url, timeout=45):
+        if url in pages:
+            return pages[url]
+        raise mod.urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    real = (mod.http_get_cached, mod._fedora_mirrors)
+    mod.http_get_cached, mod._fedora_mirrors = fake_get, lambda url: []
+    try:
+        _url, name, _mirrors = mod.r_fedora_kde()
+    except Exception as exc:
+        name = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        mod.http_get_cached, mod._fedora_mirrors = real
+    if name == "Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso":
+        print("  ok   fedora         staged 45 skipped -> %s" % name)
+        return True
+    print("  FAIL fedora         staged 45 should fall back to 44, got %s" % name)
+    return False
+
+
 def check_catalog_integrity(mod):
     """Every entry needs a unique key and a description line for the picker."""
     keys = [entry[0] for entry in mod.CATALOG]
@@ -146,7 +178,8 @@ def main():
     print("\n=== version sanity ===")
     leap_ok = check_leap_is_current(mod)
     point_ok = check_point_releases(mod)
-    if integrity_ok and catalog_ok and leap_ok and point_ok:
+    fedora_ok = check_fedora_staged_release(mod)
+    if integrity_ok and catalog_ok and leap_ok and point_ok and fedora_ok:
         return 0
     print("\nSomething upstream changed. Fix the resolver, then rerun.")
     return 1

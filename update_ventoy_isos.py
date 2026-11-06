@@ -499,14 +499,26 @@ def _fedora_iso(edition, iso_regex):
 
     dl.fedoraproject.org is behind an anti-bot challenge, so the release list
     comes from an open mirror.
+
+    A new release is synced to the mirrors days before release with its
+    subdirectories locked: the number shows up in the list, but everything
+    below it answers 404 (or 403) until release day. Then the
+    previous release is still the current one.
     """
-    nums = [int(n) for n in re.findall(r'href="(\d+)/"',
-                                       http_get_cached(FEDORA_RELEASES))]
+    nums = sorted({int(n) for n in re.findall(
+        r'href="(\d+)/"', http_get_cached(FEDORA_RELEASES))}, reverse=True)
     if not nums:
         raise RuntimeError("could not list Fedora releases")
-    iso_base = "%s%d/%s/x86_64/iso/" % (FEDORA_RELEASES, max(nums), edition)
-    url, name = latest_in_listing(iso_base, iso_regex)
-    return url, name, _fedora_mirrors(url)
+    tries = nums[:2]
+    for num in tries:
+        iso_base = "%s%d/%s/x86_64/iso/" % (FEDORA_RELEASES, num, edition)
+        try:
+            url, name = latest_in_listing(iso_base, iso_regex)
+        except urllib.error.HTTPError as e:
+            if e.code not in (403, 404) or num == tries[-1]:
+                raise
+            continue
+        return url, name, _fedora_mirrors(url)
 
 
 def _fedora_mirrors(primary):
