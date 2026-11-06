@@ -517,6 +517,10 @@ def _fedora_iso(edition, iso_regex):
         except urllib.error.HTTPError as e:
             if e.code not in (403, 404) or num == tries[-1]:
                 raise
+            # shortcut: a moved edition path also answers 404 and lands here;
+            # the warning keeps it visible. Tighten if that ever happens.
+            print("    Fedora %d %s not public yet (HTTP %d), using %d"
+                  % (num, edition, e.code, tries[-1]))
             continue
         return url, name, _fedora_mirrors(url)
 
