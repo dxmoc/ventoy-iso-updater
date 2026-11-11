@@ -11,7 +11,9 @@ Exit code is 1 if any check failed, 0 otherwise.
     python tests/check_platform.py
 """
 
+import atexit
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -221,13 +223,73 @@ def check_listing_cache(mod):
     return False
 
 
+def check_detect_phase(mod):
+    """main() resolves and update-checks every item once, in catalog order.
+
+    Both happen in a thread pool, so pin what must survive that: the report
+    keeps the catalog order, a failing resolver costs only its own item, and
+    the remote check is made once per item -- not again before the download.
+    """
+    def broken():
+        raise RuntimeError("layout changed")
+
+    catalog = [
+        ("a", "Item A", "Test", "standard", "iso",
+         lambda: ("https://example.invalid/a-2.iso", "a-2.iso")),
+        ("b", "Item B", "Test", "standard", "iso", broken),
+        ("c", "Item C", "Test", "standard", "iso",
+         lambda: ("https://example.invalid/c-1.iso", "c-1.iso")),
+    ]
+    asked = []
+
+    def fake_meta(url, timeout=30):
+        asked.append(url)
+        return 5, None
+
+    root = tempfile.mkdtemp(prefix="stick_")
+    open(os.path.join(root, "c-1.iso"), "w").close()
+    with open(os.path.join(root, mod.MANIFEST_NAME), "w") as fh:
+        json.dump({"c": {"filename": "c-1.iso", "size": 5}}, fh)
+
+    real = (mod.CATALOG, mod.remote_meta, sys.argv, sys.stdout)
+    mod.CATALOG, mod.remote_meta = catalog, fake_meta
+    sys.argv = ["x", "--dest", root, "--dry-run", "--preset", "standard",
+                "--no-update-check"]
+    sys.stdout = io.StringIO()
+    try:
+        mod.main()
+        out = sys.stdout.getvalue()
+    except Exception as exc:
+        out = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        mod.CATALOG, mod.remote_meta, sys.argv, sys.stdout = real
+        atexit.unregister(mod._farewell)
+        shutil.rmtree(root, ignore_errors=True)
+
+    wanted = ["-> a-2.iso", "-> DETECT FAILED (layout changed)", "-> c-1.iso",
+              "a-2.iso  [not on stick]", "c-1.iso  [up to date]",
+              "Item B   FAIL (detect)", "a-2.iso  WOULD DOWNLOAD",
+              "c-1.iso  SKIP (up to date)"]
+    at = [out.find(w) for w in wanted]
+    if -1 in at or at != sorted(at):
+        print("  FAIL detect         report is wrong or out of order:\n%s" % out)
+        return False
+    if asked != ["https://example.invalid/c-1.iso"]:
+        print("  FAIL detect         remote checks made: %r, want one for c-1.iso"
+              % asked)
+        return False
+    print("  ok   detect         catalog order kept, one remote check per item")
+    return True
+
+
 def main():
     mod = load_module()
     print("=== platform: %s (%s) ===" % (sys.platform, os.name))
     results = [check_drive_detection(mod),
                check_auto_install(mod),
                check_template_dirs(mod),
-               check_listing_cache(mod)]
+               check_listing_cache(mod),
+               check_detect_phase(mod)]
     if all(results):
         return 0
     print("\nA platform-dependent check failed.")

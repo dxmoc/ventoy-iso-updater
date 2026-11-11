@@ -1500,15 +1500,17 @@ def check_for_update():
                                   "https://github.com/%s/releases/latest" % REPO))
 
 
-def fetch_tracked(dest, manifest, key, label, url, name, mirrors, args, summary):
+def fetch_tracked(dest, manifest, key, label, url, name, mirrors, args, summary,
+                  checked=None):
     """Update-check -> (mirror race) -> checksum -> download -> record + prune.
     Shared by the Linux ISO loop and the Windows/Fido path. Under --dry-run it
-    stops after the check and reports what it would have done."""
+    stops after the check and reports what it would have done. `checked` is a
+    check_update() result the caller already has."""
     entry = manifest.get(key)
     if args.force:
         need, reason, meta = True, "forced", None
     else:
-        need, reason, meta = check_update(dest, entry, url, name)
+        need, reason, meta = checked or check_update(dest, entry, url, name)
     print("==> %-24s %s  [%s]" % (label, name, reason))
     if args.dry_run:
         # Nothing is written in a dry run, manifest included -- the whole point
@@ -3089,16 +3091,23 @@ def main():
     # ---- phase 1: detect newest versions -------------------------------- #
     print("Checking for latest versions...\n")
     resolved = []            # (key, label, url, filename, mirrors)
+    checked = {}             # key -> check_update() result
     summary = []             # (name, status)
 
     def detect(item):
         try:
             res = item[5]()
-            return res[0], res[1], (res[2] if len(res) > 2 else [])
+            found = res[0], res[1], (res[2] if len(res) > 2 else [])
         except Exception as e:
             return e
+        # The update check is one more request per item, so it rides along
+        # here instead of running one by one between the downloads.
+        if not args.force:
+            checked[item[0]] = check_update(
+                dest, manifest.get(item[0]), found[0], found[1])
+        return found
 
-    # This phase is almost all waiting on ~60 different hosts, so the
+    # This phase is almost all waiting on a few dozen hosts, so the
     # resolvers run side by side; map() still yields in catalog order.
     # Not a `with` block: leaving one waits for the lookups still running,
     # and Ctrl+C would sit behind them.
@@ -3128,7 +3137,7 @@ def main():
     print("Starting sequential downloads...\n")
     for key, label, url, name, mirrors in resolved:
         fetch_tracked(dest, manifest, key, label, url, name, mirrors,
-                      args, summary)
+                      args, summary, checked.get(key))
 
     # MemTest86 (special: zip -> img)
     if mem_items:
