@@ -88,6 +88,8 @@ Usage:
 
 import argparse
 import atexit
+import contextlib
+import encodings.idna  # noqa: F401 -- see RESOLVE_WORKERS
 import hashlib
 import io
 import json
@@ -100,11 +102,13 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import urllib.error
 import urllib.request
 import webbrowser
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlencode, urljoin, urlparse
 
 __version__ = "0.9.1"
@@ -148,11 +152,36 @@ def _auth_for(url):
     return {}
 
 
+_HOST_LOCKS = {}
+_ABORT = threading.Event()      # set on Ctrl+C
+
+
+@contextlib.contextmanager
+def _host_turn(url):
+    """Hold a lookup until its host is free: one request per host at a time.
+
+    The resolvers and update checks run in threads, and many entries share a
+    host: the four Proxmox images, ten Ubuntu flavours, everything on
+    SourceForge. enterprise.proxmox.com answers four simultaneous requests by
+    timing out the TLS handshake. With this, no host sees more of the script
+    at once than it did when everything ran in sequence. The lock is
+    re-entrant, so http_get_cached can hold it across its own http_get.
+
+    After Ctrl+C whatever is still queued here gives up instead of sending its
+    request, or the exit would wait until every one of them was through.
+    """
+    with _HOST_LOCKS.setdefault(urlparse(url).netloc, threading.RLock()):
+        if _ABORT.is_set():
+            raise RuntimeError("aborted")
+        yield
+
+
 def http_get(url, timeout=45):
     headers = {"User-Agent": UA}
     headers.update(_auth_for(url))
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
+    with _host_turn(url), \
+            urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
         return r.read().decode("utf-8", "replace")
 
 
@@ -176,7 +205,8 @@ def remote_meta(url, timeout=30):
     ua = _ua_for(url)
 
     def _read(req):
-        with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
+        with _host_turn(url), \
+                urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
             if "html" in r.headers.get("Content-Type", "").lower():
                 raise RuntimeError("html")     # interstitial page, not the file
             cr = r.headers.get("Content-Range", "")
@@ -376,12 +406,15 @@ def http_get_cached(url, timeout=45):
 
     Several catalog entries resolve off one and the same page: the four Proxmox
     products share a directory, the three Fedora editions share the release
-    list. Without this they hit that host once per entry, and
-    enterprise.proxmox.com answers four simultaneous requests by timing out the
-    TLS handshake. Runs are short, so a value can never go stale within one.
+    list. Without this they hit that host once per entry. Runs are short, so a
+    value can never go stale within one.
+
+    Looked up under the host lock, so threads that ask for one index at the
+    same moment wait for the first fetch instead of each making their own.
     """
-    if url not in _LISTING_CACHE:
-        _LISTING_CACHE[url] = http_get(url, timeout=timeout)
+    with _host_turn(url):
+        if url not in _LISTING_CACHE:
+            _LISTING_CACHE[url] = http_get(url, timeout=timeout)
     return _LISTING_CACHE[url]
 
 
@@ -2949,6 +2982,14 @@ def sync_auto_install(dest, manifest, args):
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
+# Resolvers running at once. _host_turn keeps them to one request per host, so
+# this only bounds how many different hosts are talked to at the same time.
+# Every name lookup goes through the idna codec, and threads racing to load it
+# on first use made the lookups fail with "unknown encoding: idna" on Windows
+# -- hence the import of encodings.idna at the top, before any thread exists.
+RESOLVE_WORKERS = 16
+
+
 def _farewell():
     """Print the parting line once as the program exits. Italic only on a real
     terminal, so redirected/piped output stays clean."""
@@ -3049,17 +3090,30 @@ def main():
     print("Checking for latest versions...\n")
     resolved = []            # (key, label, url, filename, mirrors)
     summary = []             # (name, status)
-    for key, label, _cat, _tier, _kind, resolver in iso_items:
+
+    def detect(item):
         try:
-            res = resolver()
-            url, name = res[0], res[1]
-            mirrors = res[2] if len(res) > 2 else []
-            resolved.append((key, label, url, name, mirrors))
-            extra = "  (+%d mirrors)" % len(mirrors) if mirrors else ""
-            print("  %-24s -> %s%s" % (label, name, extra))
+            res = item[5]()
+            return res[0], res[1], (res[2] if len(res) > 2 else [])
         except Exception as e:
-            print("  %-24s -> DETECT FAILED (%s)" % (label, e))
-            summary.append((label, "FAIL (detect): %s" % e))
+            return e
+
+    # This phase is almost all waiting on ~60 different hosts, so the
+    # resolvers run side by side; map() still yields in catalog order.
+    # Not a `with` block: leaving one waits for the lookups still running,
+    # and Ctrl+C would sit behind them.
+    pool = ThreadPoolExecutor(RESOLVE_WORKERS)
+    for item, res in zip(iso_items, pool.map(detect, iso_items)):
+        key, label = item[0], item[1]
+        if isinstance(res, Exception):
+            print("  %-24s -> DETECT FAILED (%s)" % (label, res))
+            summary.append((label, "FAIL (detect): %s" % res))
+            continue
+        url, name, mirrors = res
+        resolved.append((key, label, url, name, mirrors))
+        extra = "  (+%d mirrors)" % len(mirrors) if mirrors else ""
+        print("  %-24s -> %s%s" % (label, name, extra))
+    pool.shutdown()
     if mem_items:
         print("  %-24s -> memtest86-usb.img (latest zip)" % "MemTest86")
     if win_items:
@@ -3151,5 +3205,6 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
+        _ABORT.set()
         print("\nAborted.")
         sys.exit(1)

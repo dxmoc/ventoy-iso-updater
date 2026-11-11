@@ -17,6 +17,8 @@ import os
 import shutil
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(os.path.dirname(HERE), "update_ventoy_isos.py")
@@ -190,12 +192,42 @@ def check_template_dirs(mod):
     return True
 
 
+def check_listing_cache(mod):
+    """Resolvers sharing an index must fetch it once, threads or not.
+
+    The four Proxmox entries read one directory, and that host times out when
+    it gets them all at once. The resolvers run in a thread pool, where a plain
+    "not cached yet?" check lets every one of them through.
+    """
+    calls = []
+
+    def slow_get(url, timeout=45):
+        calls.append(url)
+        time.sleep(0.05)
+        return "page"
+
+    real, mod.http_get = mod.http_get, slow_get
+    try:
+        with ThreadPoolExecutor(8) as pool:
+            pages = list(pool.map(mod.http_get_cached,
+                                  ["https://example.invalid/iso/"] * 8))
+    finally:
+        mod.http_get = real
+    if len(calls) == 1 and pages == ["page"] * 8:
+        print("  ok   listing cache  8 threads, 1 fetch")
+        return True
+    print("  FAIL listing cache  8 threads fetched one index %d times"
+          % len(calls))
+    return False
+
+
 def main():
     mod = load_module()
     print("=== platform: %s (%s) ===" % (sys.platform, os.name))
     results = [check_drive_detection(mod),
                check_auto_install(mod),
-               check_template_dirs(mod)]
+               check_template_dirs(mod),
+               check_listing_cache(mod)]
     if all(results):
         return 0
     print("\nA platform-dependent check failed.")
