@@ -162,7 +162,8 @@ The other failure is a platform difference. Drive detection takes a different
 route per system -- Win32 API, the removable flag under `/sys`, drvfs under
 WSL, `/Volumes` on macOS -- and the `ventoy.json` rewriting has to survive a
 case-insensitive filesystem. `check_platform` covers both, offline, and runs on
-Linux, Windows and macOS in CI:
+Linux, Windows and macOS in CI -- together with the offline checks of the
+download path (parallel detection, free-space check, MemTest86 unpacking):
 
 ```sh
 python tests/check_platform.py

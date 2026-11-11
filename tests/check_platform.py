@@ -6,6 +6,9 @@ claims to support. That matters because those two areas are exactly where the
 platforms differ -- one uses the Win32 API, /sys, or /Volumes depending on where
 it runs, and the other has to survive a case-insensitive filesystem.
 
+The offline checks of the download path live here too -- the threaded detection
+phase, the free-space check, unpacking MemTest86 -- so they run on all three.
+
 Exit code is 1 if any check failed, 0 otherwise.
 
     python tests/check_platform.py
