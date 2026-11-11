@@ -1371,14 +1371,22 @@ def move_with_progress(src, dst, chunk=4 * 1024 * 1024):
 def download_memtest(dest_dir):
     """PassMark MemTest86 free: download the zip, extract the .img."""
     tmp = tempfile.mkdtemp(prefix="memtest_")
-    zpath = os.path.join(tmp, "memtest86-usb.zip")
-    download("https://www.memtest86.com/downloads/memtest86-usb.zip", zpath)
-    with zipfile.ZipFile(zpath) as z:
-        img = next(n for n in z.namelist() if n.lower().endswith(".img"))
-        z.extract(img, tmp)
-        shutil.copy(os.path.join(tmp, img),
-                    os.path.join(dest_dir, "memtest86-usb.img"))
-    shutil.rmtree(tmp, ignore_errors=True)
+    out = os.path.join(dest_dir, "memtest86-usb.img")
+    try:
+        zpath = os.path.join(tmp, "memtest86-usb.zip")
+        download("https://www.memtest86.com/downloads/memtest86-usb.zip", zpath)
+        # Unpacked straight onto the stick: the image is 1 GiB, and going
+        # through the temp dir first writes all of it twice. The .part keeps
+        # a half-written image from ever carrying the final name.
+        with zipfile.ZipFile(zpath) as z:
+            img = next(n for n in z.namelist() if n.lower().endswith(".img"))
+            with z.open(img) as src, open(out + ".part", "wb") as dst:
+                shutil.copyfileobj(src, dst, 1024 * 1024)
+        os.replace(out + ".part", out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        if os.path.exists(out + ".part"):     # only left behind by a failure
+            os.remove(out + ".part")
 
 
 # --------------------------------------------------------------------------- #

@@ -20,6 +20,7 @@ import shutil
 import sys
 import tempfile
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -282,6 +283,57 @@ def check_detect_phase(mod):
     return True
 
 
+def check_memtest_extract(mod):
+    """The MemTest86 image goes from the zip onto the stick in one piece.
+
+    It is unpacked straight to its place, so a zip that turns out broken
+    halfway must leave the image that was already there alone, and no .part.
+    """
+    root = tempfile.mkdtemp(prefix="stick_")
+    image = os.path.join(root, "memtest86-usb.img")
+    good = os.path.join(root, "good.zip")
+    with zipfile.ZipFile(good, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("ReadMe.txt", "x")
+        z.writestr("memtest86-usb.img", b"new image" * 4096)
+    with open(good, "rb") as fh:
+        data = fh.read()
+    # Flip the stored CRC-32 of the image (central directory, last entry).
+    at = data.rindex(b"PK\x01\x02") + 16
+    bad = os.path.join(root, "bad.zip")
+    with open(bad, "wb") as fh:
+        fh.write(data[:at] + bytes([data[at] ^ 0xFF]) + data[at + 1:])
+
+    real = mod.download
+    problems = []
+    try:
+        mod.download = lambda url, path, sha256=None: shutil.copy(good, path)
+        mod.download_memtest(root)
+        with open(image, "rb") as fh:
+            if fh.read() != b"new image" * 4096:
+                problems.append("extracted image differs from the zip's")
+
+        mod.download = lambda url, path, sha256=None: shutil.copy(bad, path)
+        try:
+            mod.download_memtest(root)
+            problems.append("a zip with a wrong CRC was accepted")
+        except zipfile.BadZipFile:
+            pass
+        with open(image, "rb") as fh:
+            if fh.read() != b"new image" * 4096:
+                problems.append("a broken zip replaced the good image")
+        if os.path.exists(image + ".part"):
+            problems.append(".part left on the stick")
+    finally:
+        mod.download = real
+        shutil.rmtree(root, ignore_errors=True)
+
+    for problem in problems:
+        print("  FAIL memtest        %s" % problem)
+    if not problems:
+        print("  ok   memtest        unpacked in place, broken zip changes nothing")
+    return not problems
+
+
 def main():
     mod = load_module()
     print("=== platform: %s (%s) ===" % (sys.platform, os.name))
@@ -289,7 +341,8 @@ def main():
                check_auto_install(mod),
                check_template_dirs(mod),
                check_listing_cache(mod),
-               check_detect_phase(mod)]
+               check_detect_phase(mod),
+               check_memtest_extract(mod)]
     if all(results):
         return 0
     print("\nA platform-dependent check failed.")
