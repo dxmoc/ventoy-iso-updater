@@ -111,7 +111,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlencode, urljoin, urlparse
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VentoyISOUpdater/%s" % __version__
 CTX = ssl.create_default_context()
