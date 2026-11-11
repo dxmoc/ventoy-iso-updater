@@ -984,10 +984,21 @@ def r_ubcd():
 def r_freebsd():
     # download.freebsd.org sends an incomplete cert chain -> use a mirror with
     # a complete chain.
-    return _latest_subdir_iso(
-        "https://ftp.halifax.rwth-aachen.de/freebsd/releases/amd64/amd64/"
-        "ISO-IMAGES/",
-        r'href="(FreeBSD-[\d.]+-RELEASE-amd64-disc1\.iso)"')
+    #
+    # The directory of the next release appears weeks early and holds only
+    # BETA and RC images until release day; the previous one is current then.
+    base = ("https://ftp.halifax.rwth-aachen.de/freebsd/releases/amd64/amd64/"
+            "ISO-IMAGES/")
+    rgx = r'href="(FreeBSD-[\d.]+-RELEASE-amd64-disc1\.iso)"'
+    dirs = sorted(set(re.findall(r'href="([\d.]+)/"', http_get(base))),
+                  key=verkey, reverse=True)[:2]
+    if len(dirs) < 2:
+        raise RuntimeError("no version dirs at %s" % base)
+    try:
+        return latest_in_listing("%s%s/" % (base, dirs[0]), rgx)
+    except RuntimeError:
+        print("    FreeBSD %s has no RELEASE image yet, using %s" % tuple(dirs))
+        return latest_in_listing("%s%s/" % (base, dirs[1]), rgx)
 
 
 # --------------------------------------------------------------------------- #

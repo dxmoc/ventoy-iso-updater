@@ -144,6 +144,36 @@ def check_fedora_staged_release(mod):
     return False
 
 
+def check_freebsd_prerelease(mod):
+    """A FreeBSD release directory holding only BETA images must be skipped.
+
+    15.2/ appeared with nothing but BETA1 in it and the resolver failed until
+    release day, although 15.1 was still the current release. Offline: the
+    listings are fake.
+    """
+    pages = {"": '<a href="15.1/"> <a href="15.2/">',
+             "15.2/": '<a href="FreeBSD-15.2-BETA1-amd64-disc1.iso">',
+             "15.1/": '<a href="FreeBSD-15.1-RELEASE-amd64-disc1.iso">'}
+
+    def fake_get(url, timeout=45):
+        return pages[url.split("ISO-IMAGES/")[1]]
+
+    real = (mod.http_get, mod.http_get_cached)
+    mod.http_get = mod.http_get_cached = fake_get
+    try:
+        name = mod.r_freebsd()[1]
+    except Exception as exc:
+        name = "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        mod.http_get, mod.http_get_cached = real
+    if name == "FreeBSD-15.1-RELEASE-amd64-disc1.iso":
+        print("  ok   freebsd        BETA-only 15.2 skipped -> %s" % name)
+        return True
+    print("  FAIL freebsd        BETA-only 15.2 should fall back to 15.1, got %s"
+          % name)
+    return False
+
+
 def check_catalog_integrity(mod):
     """Every entry needs a unique key and a description line for the picker."""
     keys = [entry[0] for entry in mod.CATALOG]
@@ -179,7 +209,9 @@ def main():
     leap_ok = check_leap_is_current(mod)
     point_ok = check_point_releases(mod)
     fedora_ok = check_fedora_staged_release(mod)
-    if integrity_ok and catalog_ok and leap_ok and point_ok and fedora_ok:
+    freebsd_ok = check_freebsd_prerelease(mod)
+    if (integrity_ok and catalog_ok and leap_ok and point_ok and fedora_ok
+            and freebsd_ok):
         return 0
     print("\nSomething upstream changed. Fix the resolver, then rerun.")
     return 1
