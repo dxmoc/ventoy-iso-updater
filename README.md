@@ -79,7 +79,9 @@ live speed in MB/s and Mbit/s. Where a machine-readable mirror list exists
 (Arch, Fedora, and Ubuntu for the country in your OS region settings), a few
 mirrors are briefly speed-tested against the primary and the fastest one is
 used -- disable with `--no-mirror-test`. The SHA-256 always comes from the
-primary; a mirror whose own checksum disagrees is dropped.
+primary; a mirror whose own checksum disagrees is dropped. An image that
+would not fit in the free space is refused before the download starts, instead
+of filling the stick and failing at the end.
 
 **Update notice:** at startup the script asks the GitHub API whether a newer
 release of itself is out and prints a link if so. It downloads and changes

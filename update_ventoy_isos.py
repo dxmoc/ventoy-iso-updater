@@ -1249,7 +1249,10 @@ def download(url, dest, sha256=None):
     With `sha256` the finished .part is hashed before the rename, so a corrupted
     or tampered image never reaches the final name -- size alone would not catch
     it. A mismatch deletes the .part: resuming it would only rebuild the same
-    bad file."""
+    bad file.
+
+    A file that will not fit in the free space is refused before the first
+    byte is written."""
     part = dest + ".part"
     resume_from = os.path.getsize(part) if os.path.exists(part) else 0
     headers = {"User-Agent": _ua_for(url)}
@@ -1285,6 +1288,19 @@ def download(url, dest, sha256=None):
             total = int(cl) if cl else None
             mode = "wb"
             print("    server: %s" % host)
+
+        # Refuse before writing instead of failing at the last gigabyte: a
+        # .part that filled the stick stays there and takes every later
+        # download down with it. An existing .part does not count against
+        # the space -- it is either resumed or overwritten.
+        try:
+            have = os.path.getsize(part) if os.path.exists(part) else 0
+            free = shutil.disk_usage(os.path.dirname(part)).free
+        except OSError:
+            free = None                    # cannot tell -> let the write decide
+        if total and free is not None and total - have > free:
+            raise RuntimeError("not enough free space: %s to write, %s free"
+                               % (_fmt_size(total - have), _fmt_size(free)))
 
         start = last_t = time.monotonic()
         last_b = done

@@ -12,6 +12,7 @@ Exit code is 1 if any check failed, 0 otherwise.
 """
 
 import atexit
+import collections
 import importlib.util
 import io
 import json
@@ -334,6 +335,89 @@ def check_memtest_extract(mod):
     return not problems
 
 
+class _FakeResponse(object):
+    """Just enough of an HTTP response for download()."""
+
+    def __init__(self, body, code=200, headers=None):
+        self.body, self.code = io.BytesIO(body), code
+        self.headers = dict(headers or {}, **{"Content-Type": "application/x-iso"})
+        self.headers.setdefault("Content-Length", str(len(body)))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def geturl(self):
+        return "https://example.invalid/x.iso"
+
+    def getcode(self):
+        return self.code
+
+    def read(self, n=-1):
+        return self.body.read(n)
+
+
+def check_free_space(mod):
+    """download() refuses what cannot fit, before it writes anything.
+
+    Running out of room mid-download leaves a .part that fills the stick. The
+    check must count a .part being resumed as space already taken care of,
+    or the last stretch of a nearly finished download would be refused.
+    """
+    root = tempfile.mkdtemp(prefix="stick_")
+    dest = os.path.join(root, "x.iso")
+    real = (mod.urllib.request.urlopen, mod.shutil.disk_usage)
+    problems = []
+
+    usage = collections.namedtuple("usage", "total used free")
+
+    def free(n):
+        mod.shutil.disk_usage = lambda path: usage(100, 100 - n, n)
+
+    try:
+        with open(dest, "wb") as fh:
+            fh.write(b"old")
+        mod.urllib.request.urlopen = \
+            lambda req, **kw: _FakeResponse(b"0123456789")
+        free(9)
+        try:
+            mod.download("https://example.invalid/x.iso", dest)
+            problems.append("10 bytes were written into 9 free")
+        except RuntimeError as exc:
+            if "free space" not in str(exc):
+                problems.append("wrong error: %s" % exc)
+        if os.path.exists(dest + ".part"):
+            problems.append("a .part was created although nothing fits")
+        with open(dest, "rb") as fh:
+            if fh.read() != b"old":
+                problems.append("the existing file was touched")
+
+        # 6 of 10 bytes are already in the .part: 4 to go, 5 free -> fits.
+        with open(dest + ".part", "wb") as fh:
+            fh.write(b"012345")
+        mod.urllib.request.urlopen = lambda req, **kw: _FakeResponse(
+            b"6789", 206, {"Content-Range": "bytes 6-9/10"})
+        free(5)
+        try:
+            mod.download("https://example.invalid/x.iso", dest)
+        except Exception as exc:
+            problems.append("resume refused: %s" % exc)
+        with open(dest, "rb") as fh:
+            if fh.read() != b"0123456789":
+                problems.append("resumed file is not complete")
+    finally:
+        mod.urllib.request.urlopen, mod.shutil.disk_usage = real
+        shutil.rmtree(root, ignore_errors=True)
+
+    for problem in problems:
+        print("  FAIL free space     %s" % problem)
+    if not problems:
+        print("  ok   free space     too big refused up front, resume counted")
+    return not problems
+
+
 def main():
     mod = load_module()
     print("=== platform: %s (%s) ===" % (sys.platform, os.name))
@@ -342,7 +426,8 @@ def main():
                check_template_dirs(mod),
                check_listing_cache(mod),
                check_detect_phase(mod),
-               check_memtest_extract(mod)]
+               check_memtest_extract(mod),
+               check_free_space(mod)]
     if all(results):
         return 0
     print("\nA platform-dependent check failed.")
