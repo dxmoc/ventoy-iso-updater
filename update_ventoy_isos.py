@@ -687,7 +687,10 @@ def r_omarchy():
     if not m:
         raise RuntimeError("could not find latest Omarchy release")
     tag = m.group(1)
-    return "https://iso.omarchy.org/omarchy-%s.iso" % tag, "omarchy-%s.iso" % tag
+    # 4.5 added an aarch64 image and renamed this one to "-x86". The name on
+    # the stick stays as it was, so the manifest keeps following it.
+    return ("https://iso.omarchy.org/omarchy-%s-x86.iso" % tag,
+            "omarchy-%s.iso" % tag)
 
 
 def sf_download(proj, rel_path):
