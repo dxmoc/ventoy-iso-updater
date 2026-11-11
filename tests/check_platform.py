@@ -23,6 +23,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -228,6 +229,71 @@ def check_listing_cache(mod):
     return False
 
 
+def check_host_lock(mod):
+    """No host gets more than one lookup at a time, however many threads run.
+
+    Many entries share a host, and the sequential script never sent a host two
+    requests at once. Keeping it that way is what lets the lookups run in
+    threads without tripping rate limits -- or Proxmox, see check_listing_cache.
+
+    After Ctrl+C the lookups still waiting for their turn must not go out at
+    all, or the exit hangs until the whole queue has been sent.
+    """
+    state = {"active": 0, "peak": 0, "calls": 0}
+    guard = threading.Lock()
+
+    def fake_urlopen(req, **kw):
+        with guard:
+            state["active"] += 1
+            state["calls"] += 1
+            state["peak"] = max(state["peak"], state["active"])
+        time.sleep(0.02)
+        with guard:
+            state["active"] -= 1
+        return _FakeResponse(b"page")
+
+    def lookup(i):
+        url = "https://example.invalid/%d.iso" % i
+        return mod.remote_meta(url) if i % 2 else mod.http_get(url)
+
+    real, mod.urllib.request.urlopen = mod.urllib.request.urlopen, fake_urlopen
+    try:
+        with ThreadPoolExecutor(8) as pool:
+            list(pool.map(lookup, range(8)))
+        mod._ABORT.set()
+        try:
+            lookup(0)
+        except RuntimeError:
+            pass
+    finally:
+        mod._ABORT.clear()
+        mod.urllib.request.urlopen = real
+    if state["peak"] != 1:
+        print("  FAIL host lock      one host saw %d requests at once"
+              % state["peak"])
+        return False
+    if state["calls"] != 8:
+        print("  FAIL host lock      a lookup was still sent after Ctrl+C")
+        return False
+    print("  ok   host lock      8 threads, 1 request at a time per host")
+    return True
+
+
+def check_idna_preloaded(mod):
+    """The idna codec has to be loaded before the resolver threads start.
+
+    Every name lookup encodes the host with it. Left to the threads, they race
+    to load it on first use, and on Windows that failed up to 38 of 60 lookups
+    with "unknown encoding: idna". The import in the script looks unused, so
+    this is what keeps it from being tidied away.
+    """
+    if "encodings.idna" in sys.modules:
+        print("  ok   idna           codec loaded with the script")
+        return True
+    print("  FAIL idna           encodings.idna is not imported by the script")
+    return False
+
+
 def check_detect_phase(mod):
     """main() resolves and update-checks every item once, in catalog order.
 
@@ -428,6 +494,8 @@ def main():
                check_auto_install(mod),
                check_template_dirs(mod),
                check_listing_cache(mod),
+               check_host_lock(mod),
+               check_idna_preloaded(mod),
                check_detect_phase(mod),
                check_memtest_extract(mod),
                check_free_space(mod)]
