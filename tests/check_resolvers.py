@@ -174,6 +174,40 @@ def check_freebsd_prerelease(mod):
     return False
 
 
+def check_sums_ignore_html(mod):
+    """A hex string inside an HTML page is not a published checksum.
+
+    SourceForge answers "<image>.sha256" with its file browser. That page
+    carries 64-digit hex in icon URLs and file metadata, and whenever exactly
+    one turned up it was taken for the image's SHA-256 -- GParted downloaded
+    in full and was then discarded as corrupt. A real one-line sums file must
+    still count, whatever filename it mentions. Offline: the pages are fake.
+    """
+    digest = "ab" * 32
+    html = '<html><img src="//a.example/icon?%s?w=48">' % ("cd" * 32)
+    pages = {"https://example.invalid/a.iso.sha256": html,
+             "https://example.invalid/b.iso.sha256":
+                 "%s  upstream-build-name.iso\n" % digest}
+
+    def fake_get(url, timeout=45):
+        if url in pages:
+            return pages[url]
+        raise mod.urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    real, mod.http_get = mod.http_get, fake_get
+    try:
+        from_html = mod.remote_sha256("https://example.invalid/a.iso", "a.iso")
+        from_sums = mod.remote_sha256("https://example.invalid/b.iso", "b.iso")
+    finally:
+        mod.http_get = real
+    if from_html is None and from_sums == digest:
+        print("  ok   sums           HTML page ignored, one-line sums file read")
+        return True
+    print("  FAIL sums           HTML page gave %s, one-line sums file gave %s"
+          % (from_html, from_sums))
+    return False
+
+
 def check_catalog_integrity(mod):
     """Every entry needs a unique key and a description line for the picker."""
     keys = [entry[0] for entry in mod.CATALOG]
@@ -210,8 +244,9 @@ def main():
     point_ok = check_point_releases(mod)
     fedora_ok = check_fedora_staged_release(mod)
     freebsd_ok = check_freebsd_prerelease(mod)
+    sums_ok = check_sums_ignore_html(mod)
     if (integrity_ok and catalog_ok and leap_ok and point_ok and fedora_ok
-            and freebsd_ok):
+            and freebsd_ok and sums_ok):
         return 0
     print("\nSomething upstream changed. Fix the resolver, then rerun.")
     return 1

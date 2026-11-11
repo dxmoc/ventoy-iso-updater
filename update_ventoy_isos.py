@@ -265,11 +265,13 @@ def remote_sha256(url, filename, timeout=20):
 
     A per-image sums file is addressed by the image URL itself, so a single
     hash in it can be trusted even when the name inside differs -- NixOS writes
-    the upstream build name there while this script stores a shortened one. The
-    word boundary keeps a 128-character SHA-512 from being read as a SHA-256,
-    and requiring exactly one match keeps that shortcut off multi-entry files.
-    SourceForge answers these URLs with an HTML interstitial, which matches
-    nothing here and is therefore ignored on its own.
+    the upstream build name there while this script stores a shortened one.
+    Requiring exactly one match keeps that shortcut off multi-entry files, and
+    the hash has to stand between whitespace: that keeps a 128-character
+    SHA-512 from being read as a SHA-256, and it keeps out the HTML page
+    SourceForge answers these URLs with. That page is full of hex strings --
+    icon URLs, file metadata -- and whenever it held exactly one of the right
+    length, a finished download was thrown away over a "mismatch".
     """
     for suffix in PER_FILE_SUMS:
         try:
@@ -279,7 +281,7 @@ def remote_sha256(url, filename, timeout=20):
         direct = _sha256_from_text(text, filename)
         if direct:
             return direct
-        lone = re.findall(r"\b%s\b" % _HASH, text)
+        lone = re.findall(r"(?<!\S)%s(?!\S)" % _HASH, text)
         if len(lone) == 1:
             return lone[0].lower()
 
