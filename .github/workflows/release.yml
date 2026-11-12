@@ -1,11 +1,14 @@
 name: release
 
 # Builds the binaries for a published release and attaches them to it. The
-# release itself (tag + notes) is still created by hand.
+# release itself (tag + notes) is still created by hand. Pull requests that
+# touch the build only build, so a broken target shows up before a release.
 
 on:
   release:
     types: [published]
+  pull_request:
+    paths: [".github/workflows/release.yml", "Cargo.toml", "Cargo.lock"]
   workflow_dispatch:
     inputs:
       tag:
@@ -35,12 +38,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ env.TAG || github.sha }}
       - if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Upload
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,6 +55,7 @@ jobs:
           gh release upload "$TAG" "${{ matrix.asset }}" --clobber
 
   checksums:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     steps:
