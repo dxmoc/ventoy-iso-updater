@@ -151,9 +151,18 @@ fn find_superseded(
 ) -> Vec<(String, String, u64, String)> {
     let mut protected: HashSet<String> = current.values().map(|(_, n)| n.to_lowercase()).collect();
     protected.insert(MANIFEST_NAME.to_lowercase());
+    // What the manifest records is on the stick until a download replaces it:
+    // after a failed update it is the only copy, though `current` names the new one.
+    protected.extend(
+        manifest
+            .keys()
+            .filter_map(|k| crate::manifest::entry_filename(manifest, k))
+            .map(str::to_lowercase),
+    );
+    // Only keys `current` knows can own a file (a record without a filename has none).
     let history: HashMap<&str, HashSet<String>> = manifest
         .iter()
-        .filter(|(_, e)| e.is_object())
+        .filter(|(k, e)| e.is_object() && current.contains_key(*k))
         .map(|(k, e)| {
             let seen = e
                 .get("history")
@@ -441,6 +450,35 @@ mod tests {
         assert!(inv.installed.is_empty());
         assert_eq!(inv.others.len(), 8);
         assert!(inv.others.iter().all(|(n, s)| is_image(n) && *s == 2));
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    /// The download of the new version failed, so the manifest still names the
+    /// old file -- the only copy on the stick. It must not be listed for deletion.
+    #[test]
+    fn failed_update_keeps_the_only_copy() {
+        let d = std::env::temp_dir().join(format!("vi_cleanup_fail_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("omarchy-3.8.4.iso"), b"xx").unwrap();
+        fs::write(d.join("x-1.iso"), b"xx").unwrap();
+        // "x" has history but no filename: no owner, and no panic.
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"omarchy": {"filename": "omarchy-3.8.4.iso"},
+                "x": {"filename": null, "history": ["x-1.iso"]}}"#,
+        )
+        .unwrap();
+        let resolved = vec![(
+            "omarchy".to_string(),
+            "Omarchy".to_string(),
+            Resolved {
+                url: "u".into(),
+                name: "omarchy-3.9.0.iso".into(),
+                mirrors: vec![],
+            },
+        )];
+        let current = current_files(&manifest, &resolved, &[]);
+        assert!(find_superseded(&d, &manifest, &current).is_empty());
         fs::remove_dir_all(d).unwrap();
     }
 }
