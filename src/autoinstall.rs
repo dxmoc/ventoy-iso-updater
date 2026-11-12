@@ -155,10 +155,15 @@ pub fn sync_auto_install(dest: &Path, manifest: &Manifest, args: &Args) {
 
 fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) {
     let path = dest.join("ventoy").join("ventoy.json");
-    // A file that exists but does not parse is the user's and stays untouched:
-    // rewriting it as {"auto_install": ...} would drop the rest of their config.
+    // A file that exists but cannot be read or parsed (Notepad's ANSI or UTF-16
+    // included) is the user's and stays untouched: rewriting it as
+    // {"auto_install": ...} would drop the rest of their config.
     let mut config: Value = match fs::read_to_string(&path) {
-        Err(_) => Value::Object(Map::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Object(Map::new()),
+        Err(e) => {
+            println!("\nventoy.json cannot be read ({e}) -- leaving it alone.");
+            return;
+        }
         Ok(text) => match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
             Ok(v) => v,
             Err(e) => {
@@ -378,5 +383,20 @@ mod tests {
         ));
         assert!(!is_managed(&json!({"image": "/x.iso", "template": []})));
         assert!(!is_managed(&json!("/template/win11/a.xml")));
+    }
+
+    /// A ventoy.json saved as ANSI (not UTF-8) is left exactly as it was.
+    #[test]
+    fn unreadable_ventoy_json_is_left_alone() {
+        let root = stick("ansi");
+        fs::create_dir_all(root.join("template/win11")).unwrap();
+        fs::write(root.join("template/win11/a.xml"), "").unwrap();
+        fs::write(root.join("W11.iso"), "").unwrap();
+        let orig: &[u8] = b"{\"theme\": {\"file\": \"/x\"}, \"menu_alias\": [{\"image\": \"/a.iso\", \"alias\": \"Men\xfc\"}]}";
+        fs::write(root.join("ventoy/ventoy.json"), orig).unwrap();
+        sync(&root, &manifest(&[("win11_en", "W11.iso")]), false, WINS);
+        let now = fs::read(root.join("ventoy/ventoy.json")).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(now, orig);
     }
 }
