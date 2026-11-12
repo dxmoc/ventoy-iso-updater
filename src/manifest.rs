@@ -27,7 +27,13 @@ pub fn load(dest: &Path) -> Manifest {
     fs::read_to_string(dest.join(MANIFEST_NAME))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| if let Value::Object(m) = v { Some(m) } else { None })
+        .and_then(|v| {
+            if let Value::Object(m) = v {
+                Some(m)
+            } else {
+                None
+            }
+        })
         .unwrap_or_default()
 }
 
@@ -48,18 +54,27 @@ pub fn save(dest: &Path, manifest: &Manifest) -> std::io::Result<()> {
     }
     let path = dest.join(MANIFEST_NAME);
     let tmp = dest.join(format!("{MANIFEST_NAME}.tmp"));
-    fs::write(&tmp, serde_json::to_string_pretty(&sorted(&Value::Object(manifest.clone())))?)?;
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&sorted(&Value::Object(manifest.clone())))?,
+    )?;
     fs::rename(tmp, path)
 }
 
 pub fn entry_filename<'a>(manifest: &'a Manifest, key: &str) -> Option<&'a str> {
-    manifest.get(key)?.get("filename")?.as_str().filter(|s| !s.is_empty())
+    manifest
+        .get(key)?
+        .get("filename")?
+        .as_str()
+        .filter(|s| !s.is_empty())
 }
 
 /// Python int() of a manifest value; None also for 0, which Python treats as unset.
 fn as_size(v: Option<&Value>) -> Option<u64> {
     let v = v?;
-    v.as_u64().or_else(|| v.as_str()?.trim().parse().ok()).filter(|&n| n > 0)
+    v.as_u64()
+        .or_else(|| v.as_str()?.trim().parse().ok())
+        .filter(|&n| n > 0)
 }
 
 /// Decide whether `name` needs (re)downloading. Three cases, and in two of
@@ -72,14 +87,32 @@ fn as_size(v: Option<&Value>) -> Option<u64> {
 /// In the last two the local size is compared against the remote one; a match
 /// adopts the file, a mismatch redownloads, and an unreadable remote size
 /// leaves the file alone rather than destroying it on a guess.
-pub fn check_update(dest: &Path, entry: Option<&serde_json::Value>, url: &str, name: &str) -> Check {
+pub fn check_update(
+    dest: &Path,
+    entry: Option<&serde_json::Value>,
+    url: &str,
+    name: &str,
+) -> Check {
     check_update_with(dest, entry, name, || net::remote_meta(url))
 }
 
-fn check_update_with(dest: &Path, entry: Option<&Value>, name: &str, remote: impl FnOnce() -> Meta) -> Check {
-    let check = |need: bool, reason: String, meta: Meta| Check { need, reason, meta: Some(meta) };
+fn check_update_with(
+    dest: &Path,
+    entry: Option<&Value>,
+    name: &str,
+    remote: impl FnOnce() -> Meta,
+) -> Check {
+    let check = |need: bool, reason: String, meta: Meta| Check {
+        need,
+        reason,
+        meta: Some(meta),
+    };
     let Ok(md) = fs::metadata(dest.join(name)) else {
-        return Check { need: true, reason: "not on stick".into(), meta: None };
+        return Check {
+            need: true,
+            reason: "not on stick".into(),
+            meta: None,
+        };
     };
     let local = md.len();
     // Python truthiness: an empty record counts as no record.
@@ -98,9 +131,13 @@ fn check_update_with(dest: &Path, entry: Option<&Value>, name: &str, remote: imp
             // Last-Modified alone is not trustworthy: mirrors and CDNs hand out
             // different timestamps for byte-identical files, which would trigger
             // pointless multi-GB re-downloads. Only trust it when there is no size.
-            let old_mtime = e.get("mtime").and_then(Value::as_str).filter(|s| !s.is_empty());
+            let old_mtime = e
+                .get("mtime")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty());
             if size.is_none()
-                && let (Some(m), Some(old)) = (meta.mtime.as_deref().filter(|s| !s.is_empty()), old_mtime)
+                && let (Some(m), Some(old)) =
+                    (meta.mtime.as_deref().filter(|s| !s.is_empty()), old_mtime)
                 && m != old
             {
                 return check(true, "remote updated".into(), meta);
@@ -126,14 +163,26 @@ fn check_update_with(dest: &Path, entry: Option<&Value>, name: &str, remote: imp
     }
 }
 
-pub fn record_version(dest: &Path, manifest: &mut Manifest, key: &str, url: &str, name: &str, meta: Option<&Meta>) {
+pub fn record_version(
+    dest: &Path,
+    manifest: &mut Manifest,
+    key: &str,
+    url: &str,
+    name: &str,
+    meta: Option<&Meta>,
+) {
     if let Err(e) = try_record_version(dest, manifest, key, url, name, meta) {
         println!("    could not write {MANIFEST_NAME}: {e}");
     }
 }
 
 pub(crate) fn try_record_version(
-    dest: &Path, manifest: &mut Manifest, key: &str, url: &str, name: &str, meta: Option<&Meta>,
+    dest: &Path,
+    manifest: &mut Manifest,
+    key: &str,
+    url: &str,
+    name: &str,
+    meta: Option<&Meta>,
 ) -> std::io::Result<()> {
     let size = meta
         .and_then(|m| m.size.filter(|&s| s > 0))
@@ -146,7 +195,12 @@ pub(crate) fn try_record_version(
     let mut history: Vec<Value> = prev
         .and_then(|p| p.get("history"))
         .and_then(Value::as_array)
-        .map(|h| h.iter().filter(|h| h.as_str() != Some(name)).cloned().collect())
+        .map(|h| {
+            h.iter()
+                .filter(|h| h.as_str() != Some(name))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default();
     if let Some(old) = entry_filename(manifest, key)
         && old != name
@@ -156,7 +210,8 @@ pub(crate) fn try_record_version(
     }
     let mut rec = serde_json::json!({"filename": name, "url": url, "size": size, "mtime": mtime});
     if !history.is_empty() {
-        rec["history"] = Value::Array(history.split_off(history.len().saturating_sub(HISTORY_KEEP)));
+        rec["history"] =
+            Value::Array(history.split_off(history.len().saturating_sub(HISTORY_KEEP)));
     }
     manifest.insert(key.to_string(), rec);
     save(dest, manifest)
@@ -165,17 +220,26 @@ pub(crate) fn try_record_version(
 /// Startup notice when a newer release is out; silent on any error.
 /// This must never stand between the user and the run itself.
 pub fn check_for_update() {
-    let Some(data) = net::http_get_timeout(&format!("https://api.github.com/repos/{REPO}/releases/latest"), 5)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-    else {
+    let Some(data) = net::http_get_timeout(
+        &format!("https://api.github.com/repos/{REPO}/releases/latest"),
+        5,
+    )
+    .ok()
+    .and_then(|s| serde_json::from_str::<Value>(&s).ok()) else {
         return;
     };
-    let Some(tag) = data.get("tag_name").and_then(Value::as_str) else { return };
+    let Some(tag) = data.get("tag_name").and_then(Value::as_str) else {
+        return;
+    };
     if net::verkey(tag) > net::verkey(VERSION) {
         println!("A newer version is available: {tag} (you have {VERSION})");
         let fallback = format!("https://github.com/{REPO}/releases/latest");
-        println!("  {}\n", data.get("html_url").and_then(Value::as_str).unwrap_or(&fallback));
+        println!(
+            "  {}\n",
+            data.get("html_url")
+                .and_then(Value::as_str)
+                .unwrap_or(&fallback)
+        );
     }
 }
 
@@ -215,14 +279,20 @@ mod tests {
         let mut m = Manifest::new();
         fs::write(d.join("x-1.iso"), b"abc").unwrap();
         for v in 1..=8 {
-            let meta = Meta { size: Some(10), mtime: None };
+            let meta = Meta {
+                size: Some(10),
+                mtime: None,
+            };
             try_record_version(&d, &mut m, "x", "u", &format!("x-{v}.iso"), Some(&meta)).unwrap();
         }
         let e = &m["x"];
         assert_eq!(e["filename"], "x-8.iso");
         assert_eq!(e["size"], 10);
         assert_eq!(e["mtime"], Value::Null);
-        assert_eq!(e["history"], serde_json::json!(["x-3.iso", "x-4.iso", "x-5.iso", "x-6.iso", "x-7.iso"]));
+        assert_eq!(
+            e["history"],
+            serde_json::json!(["x-3.iso", "x-4.iso", "x-5.iso", "x-6.iso", "x-7.iso"])
+        );
         // Going back to a name in the history drops it from there; no meta -> local size.
         try_record_version(&d, &mut m, "x", "u", "x-1.iso", None).unwrap();
         assert_eq!(m["x"]["size"], 3);
@@ -234,26 +304,62 @@ mod tests {
     fn check_update_cases() {
         let d = tmpdir("check");
         fs::write(d.join("a-2.iso"), b"12345").unwrap();
-        let meta = |size: Option<u64>, mtime: Option<&str>| Meta { size, mtime: mtime.map(str::to_owned) };
+        let meta = |size: Option<u64>, mtime: Option<&str>| Meta {
+            size,
+            mtime: mtime.map(str::to_owned),
+        };
         let run = |entry: Value, name: &str, m: Meta| {
             let c = check_update_with(&d, Some(&entry), name, || m);
             (c.need, c.reason)
         };
         let r = |need: bool, s: &str| (need, s.to_string());
 
-        assert_eq!(check_update_with(&d, None, "missing.iso", || unreachable!()).reason, "not on stick");
+        assert_eq!(
+            check_update_with(&d, None, "missing.iso", || unreachable!()).reason,
+            "not on stick"
+        );
         let same = serde_json::json!({"filename": "a-2.iso", "size": 5, "mtime": "old"});
-        assert_eq!(run(same.clone(), "a-2.iso", meta(Some(5), Some("new"))), r(false, "up to date"));
-        assert_eq!(run(same.clone(), "a-2.iso", meta(Some(6), None)), r(true, "remote size changed"));
-        assert_eq!(run(same.clone(), "a-2.iso", meta(None, Some("new"))), r(true, "remote updated"));
-        assert_eq!(run(serde_json::json!({"filename": "a-2.iso", "size": "5"}), "a-2.iso", meta(Some(6), None)),
-                   r(true, "remote size changed"));
+        assert_eq!(
+            run(same.clone(), "a-2.iso", meta(Some(5), Some("new"))),
+            r(false, "up to date")
+        );
+        assert_eq!(
+            run(same.clone(), "a-2.iso", meta(Some(6), None)),
+            r(true, "remote size changed")
+        );
+        assert_eq!(
+            run(same.clone(), "a-2.iso", meta(None, Some("new"))),
+            r(true, "remote updated")
+        );
+        assert_eq!(
+            run(
+                serde_json::json!({"filename": "a-2.iso", "size": "5"}),
+                "a-2.iso",
+                meta(Some(6), None)
+            ),
+            r(true, "remote size changed")
+        );
         let renamed = serde_json::json!({"filename": "a-1.iso"});
-        assert_eq!(run(renamed.clone(), "a-2.iso", meta(Some(5), None)), r(false, "present, adopted (was a-1.iso)"));
-        assert_eq!(run(renamed, "a-2.iso", meta(None, None)), r(true, "new version a-1.iso -> a-2.iso"));
-        assert_eq!(run(serde_json::json!({}), "a-2.iso", meta(Some(5), None)), r(false, "present, adopted"));
-        assert_eq!(run(Value::Null, "a-2.iso", meta(Some(9), None)), r(true, "size mismatch -> redownload"));
-        assert_eq!(run(Value::Null, "a-2.iso", meta(None, None)), r(false, "present (size unverifiable)"));
+        assert_eq!(
+            run(renamed.clone(), "a-2.iso", meta(Some(5), None)),
+            r(false, "present, adopted (was a-1.iso)")
+        );
+        assert_eq!(
+            run(renamed, "a-2.iso", meta(None, None)),
+            r(true, "new version a-1.iso -> a-2.iso")
+        );
+        assert_eq!(
+            run(serde_json::json!({}), "a-2.iso", meta(Some(5), None)),
+            r(false, "present, adopted")
+        );
+        assert_eq!(
+            run(Value::Null, "a-2.iso", meta(Some(9), None)),
+            r(true, "size mismatch -> redownload")
+        );
+        assert_eq!(
+            run(Value::Null, "a-2.iso", meta(None, None)),
+            r(false, "present (size unverifiable)")
+        );
         fs::remove_dir_all(&d).unwrap();
     }
 }

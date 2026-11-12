@@ -48,8 +48,12 @@ static HOST_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
 static LISTING_CACHE: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
 
 /// Set on Ctrl+C: queued lookups give up instead of sending their request.
-pub fn abort() { ABORT.store(true, Ordering::SeqCst) }
-pub fn aborted() -> bool { ABORT.load(Ordering::SeqCst) }
+pub fn abort() {
+    ABORT.store(true, Ordering::SeqCst)
+}
+pub fn aborted() -> bool {
+    ABORT.load(Ordering::SeqCst)
+}
 
 /// HTTP status of a failed request, if the error was one (e.g. 404, 416).
 pub fn http_status(e: &anyhow::Error) -> Option<u16> {
@@ -75,7 +79,11 @@ fn auth_for(url: &str) -> Option<String> {
 /// only redirects wget/curl to the binary, so it must not look like a browser.
 pub fn ua_for(url: &str) -> &'static str {
     let host = host_of(url).to_lowercase();
-    if host.contains("sourceforge") || host.contains("sf.net") { "Wget/1.21" } else { UA }
+    if host.contains("sourceforge") || host.contains("sf.net") {
+        "Wget/1.21"
+    } else {
+        UA
+    }
 }
 
 /// Run `f` once no other request to the same host is in flight.
@@ -86,7 +94,12 @@ pub fn ua_for(url: &str) -> &'static str {
 /// that fetch under the lock use the unlocked `fetch`. After Ctrl+C whatever is
 /// still queued gives up instead of sending its request.
 fn host_turn<T>(url: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    let lock = HOST_LOCKS.lock().unwrap().entry(host_of(url)).or_default().clone();
+    let lock = HOST_LOCKS
+        .lock()
+        .unwrap()
+        .entry(host_of(url))
+        .or_default()
+        .clone();
     let _turn = lock.lock().unwrap_or_else(|p| p.into_inner());
     if aborted() {
         bail!("aborted");
@@ -96,13 +109,29 @@ fn host_turn<T>(url: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 
 /// One request with urllib-like timeouts: `secs` for connecting and per read.
 /// 4xx/5xx are `ureq::Error::StatusCode`, except 416 when `allow_416`.
-fn send(url: &str, head: bool, headers: &[(&str, &str)], secs: u64, allow_416: bool) -> Result<Body, ureq::Error> {
+fn send(
+    url: &str,
+    head: bool,
+    headers: &[(&str, &str)],
+    secs: u64,
+    allow_416: bool,
+) -> Result<Body, ureq::Error> {
     let t = Some(Duration::from_secs(secs));
-    let mut req = if head { AGENT.head(url) } else { AGENT.get(url) };
+    let mut req = if head {
+        AGENT.head(url)
+    } else {
+        AGENT.get(url)
+    };
     for (k, v) in headers {
         req = req.header(*k, *v);
     }
-    let r = req.config().timeout_connect(t).timeout_per_read(t).http_status_as_error(false).build().call()?;
+    let r = req
+        .config()
+        .timeout_connect(t)
+        .timeout_per_read(t)
+        .http_status_as_error(false)
+        .build()
+        .call()?;
     match r.status().as_u16() {
         416 if allow_416 => Ok(r),
         code if code >= 400 => Err(ureq::Error::StatusCode(code)),
@@ -111,7 +140,11 @@ fn send(url: &str, head: bool, headers: &[(&str, &str)], secs: u64, allow_416: b
 }
 
 fn header(r: &Body, name: &str) -> String {
-    r.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
+    r.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Full size from a "bytes 0-0/12345" Content-Range.
@@ -132,7 +165,9 @@ fn fetch(url: &str, secs: u64) -> Result<String> {
 }
 
 /// GET a page as text, one request per host at a time, 45 s timeout.
-pub fn http_get(url: &str) -> Result<String> { http_get_timeout(url, 45) }
+pub fn http_get(url: &str) -> Result<String> {
+    http_get_timeout(url, 45)
+}
 pub fn http_get_timeout(url: &str, secs: u64) -> Result<String> {
     host_turn(url, || fetch(url, secs))
 }
@@ -142,14 +177,19 @@ pub fn http_get_timeout(url: &str, secs: u64) -> Result<String> {
 /// Several entries resolve off one page (four Proxmox products, three Fedora
 /// editions). Runs are short, so a value never goes stale. Looked up under the
 /// host lock, so threads asking at once wait for the first fetch.
-pub fn http_get_cached(url: &str) -> Result<String> { http_get_cached_timeout(url, 45) }
+pub fn http_get_cached(url: &str) -> Result<String> {
+    http_get_cached_timeout(url, 45)
+}
 pub fn http_get_cached_timeout(url: &str, secs: u64) -> Result<String> {
     host_turn(url, || {
         if let Some(hit) = LISTING_CACHE.lock().unwrap().get(url) {
             return Ok(hit.clone());
         }
         let text = fetch(url, secs)?;
-        LISTING_CACHE.lock().unwrap().insert(url.to_string(), text.clone());
+        LISTING_CACHE
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), text.clone());
         Ok(text)
     })
 }
@@ -164,7 +204,11 @@ pub fn open_stream(url: &str, offset: u64) -> Result<Stream> {
         headers.push(("Range", &range));
     }
     let r = send(url, false, &headers, 60, true)?;
-    let host = r.get_uri().authority().map(|a| a.to_string()).unwrap_or_else(|| host_of(url));
+    let host = r
+        .get_uri()
+        .authority()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| host_of(url));
     Ok(Stream {
         status: r.status().as_u16(),
         host,
@@ -204,7 +248,13 @@ pub fn remote_meta(url: &str) -> Meta {
 /// Suffixes for a sums file that belongs to one image, appended to its URL.
 pub const PER_FILE_SUMS: &[&str] = &[".sha256", ".sha256sum", ".DIGESTS", ".sha256.txt"];
 /// Names of a sums file covering a whole directory, resolved next to the image.
-pub const DIR_SUMS: &[&str] = &["SHA256SUMS", "sha256sum.txt", "sha256sums.txt", "CHECKSUM", "SHA256SUM"];
+pub const DIR_SUMS: &[&str] = &[
+    "SHA256SUMS",
+    "sha256sum.txt",
+    "sha256sums.txt",
+    "CHECKSUM",
+    "SHA256SUM",
+];
 
 const HASH: &str = "[0-9a-fA-F]{64}";
 
@@ -212,9 +262,17 @@ const HASH: &str = "[0-9a-fA-F]{64}";
 /// or BSD ("SHA256 (<file>) = <hash>") form.
 pub fn sha256_from_text(text: &str, filename: &str) -> Option<String> {
     let f = regex::escape(filename);
-    [format!(r"(?m)^({HASH})[ \t]+[*]?{f}[ \t]*$"), format!(r"SHA256\s*\(\s*{f}\s*\)\s*=\s*({HASH})")]
-        .iter()
-        .find_map(|p| Regex::new(p).ok()?.captures(text).map(|c| c[1].to_lowercase()))
+    [
+        format!(r"(?m)^({HASH})[ \t]+[*]?{f}[ \t]*$"),
+        format!(r"SHA256\s*\(\s*{f}\s*\)\s*=\s*({HASH})"),
+    ]
+    .iter()
+    .find_map(|p| {
+        Regex::new(p)
+            .ok()?
+            .captures(text)
+            .map(|c| c[1].to_lowercase())
+    })
 }
 
 /// Best-effort SHA-256 for an image, from whatever the source publishes.
@@ -231,9 +289,15 @@ pub fn remote_sha256(url: &str, filename: &str) -> Option<String> {
 /// must be exactly one, standing between whitespace: that keeps a SHA-512 from
 /// reading as a SHA-256, and keeps out the HTML page SourceForge answers with,
 /// whose icon URLs once made a good download fail as a "mismatch".
-pub fn remote_sha256_with(get: &dyn Fn(&str) -> Result<String>, url: &str, filename: &str) -> Option<String> {
+pub fn remote_sha256_with(
+    get: &dyn Fn(&str) -> Result<String>,
+    url: &str,
+    filename: &str,
+) -> Option<String> {
     for suffix in PER_FILE_SUMS {
-        let Ok(text) = get(&format!("{url}{suffix}")) else { continue };
+        let Ok(text) = get(&format!("{url}{suffix}")) else {
+            continue;
+        };
         if let Some(h) = sha256_from_text(&text, filename) {
             return Some(h);
         }
@@ -246,7 +310,9 @@ pub fn remote_sha256_with(get: &dyn Fn(&str) -> Result<String>, url: &str, filen
         }
     }
     let base = &url[..url.rfind('/').map_or(0, |i| i + 1)];
-    DIR_SUMS.iter().find_map(|c| sha256_from_text(&get(&format!("{base}{c}")).ok()?, filename))
+    DIR_SUMS
+        .iter()
+        .find_map(|c| sha256_from_text(&get(&format!("{base}{c}")).ok()?, filename))
 }
 
 /// SHA-256 of a file, streamed so a 5 GB ISO stays out of memory.
@@ -286,9 +352,15 @@ fn measure_speed(url: &str) -> f64 {
     let timeout = 8.0;
     let cap = (SPEEDTEST_SECONDS * 40.0 * 1024.0 * 1024.0) as u64 + SPEEDTEST_WARMUP;
     let range = format!("bytes=0-{}", cap - 1);
-    let headers = [("User-Agent", ua_for(url)), ("Range", range.as_str()), ("Accept-Encoding", "identity")];
+    let headers = [
+        ("User-Agent", ua_for(url)),
+        ("Range", range.as_str()),
+        ("Accept-Encoding", "identity"),
+    ];
     let started = Instant::now();
-    let Ok(r) = send(url, false, &headers, timeout as u64, false) else { return 0.0 };
+    let Ok(r) = send(url, false, &headers, timeout as u64, false) else {
+        return 0.0;
+    };
     let mut reader = r.into_body().into_reader();
     let mut buf = vec![0u8; 64 * 1024];
     let (mut warm, mut got, mut t0) = (0u64, 0u64, None::<Instant>);
@@ -320,18 +392,28 @@ fn measure_speed(url: &str) -> f64 {
         None => (warm, started.elapsed().as_secs_f64()),
         Some(t) => (got, t.elapsed().as_secs_f64()),
     };
-    if bytes > 0 && dt > 0.0 { bytes as f64 / dt } else { 0.0 }
+    if bytes > 0 && dt > 0.0 {
+        bytes as f64 / dt
+    } else {
+        0.0
+    }
 }
 
 /// Speed-test each candidate in turn (in parallel they would compete for the
 /// same bandwidth) and return the fastest; the first if none responds.
 pub fn fastest_mirror(urls: &[String]) -> String {
     let mut seen = BTreeSet::new();
-    let urls: Vec<&String> = urls.iter().filter(|u| !u.is_empty() && seen.insert(*u)).collect();
+    let urls: Vec<&String> = urls
+        .iter()
+        .filter(|u| !u.is_empty() && seen.insert(*u))
+        .collect();
     if urls.len() <= 1 {
         return urls.first().map(|u| u.to_string()).unwrap_or_default();
     }
-    println!("    speed-testing {} mirrors (up to {SPEEDTEST_SECONDS:.0}s each)...", urls.len());
+    println!(
+        "    speed-testing {} mirrors (up to {SPEEDTEST_SECONDS:.0}s each)...",
+        urls.len()
+    );
     let (mut best, mut best_bps) = (urls[0], -1.0);
     for u in urls {
         let bps = measure_speed(u);
@@ -357,7 +439,12 @@ pub fn fastest_mirror(urls: &[String]) -> String {
 pub fn verkey(name: &str) -> Vec<Vec<u64>> {
     static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9]+(?:\.[0-9]+)*").unwrap());
     RE.find_iter(name)
-        .map(|m| m.as_str().split('.').map(|n| n.parse().unwrap_or(u64::MAX)).collect())
+        .map(|m| {
+            m.as_str()
+                .split('.')
+                .map(|n| n.parse().unwrap_or(u64::MAX))
+                .collect()
+        })
         .collect()
 }
 
@@ -366,7 +453,12 @@ pub fn find_all(re: &str, text: &str) -> Result<Vec<String>> {
     let re = Regex::new(re)?;
     Ok(re
         .captures_iter(text)
-        .map(|c| c.get(1).or_else(|| c.get(0)).map_or("", |m| m.as_str()).to_string())
+        .map(|c| {
+            c.get(1)
+                .or_else(|| c.get(0))
+                .map_or("", |m| m.as_str())
+                .to_string()
+        })
         .collect())
 }
 
@@ -390,7 +482,9 @@ pub fn urljoin(base: &str, rel: &str) -> String {
         return rel.to_string();
     }
     let scheme_end = base.find("://").map_or(0, |i| i + 3);
-    let auth_end = base[scheme_end..].find('/').map_or(base.len(), |i| scheme_end + i);
+    let auth_end = base[scheme_end..]
+        .find('/')
+        .map_or(base.len(), |i| scheme_end + i);
     if let Some(r) = rel.strip_prefix("//") {
         return format!("{}{r}", &base[..scheme_end]);
     }
@@ -407,7 +501,11 @@ pub fn urljoin(base: &str, rel: &str) -> String {
     for (i, seg) in segs.iter().enumerate() {
         let last = i == segs.len() - 1;
         match *seg {
-            "." => if last { out.push("") },
+            "." => {
+                if last {
+                    out.push("")
+                }
+            }
             ".." => {
                 if out.len() > 1 {
                     out.pop();
@@ -434,40 +532,76 @@ mod tests {
 
     #[test]
     fn verkey_point_release_beats_base() {
-        assert!(verkey("ubuntu-26.04.1-desktop-amd64.iso") > verkey("ubuntu-26.04-desktop-amd64.iso"));
-        assert!(verkey("ubuntu-24.04.5.1-desktop-amd64.iso") > verkey("ubuntu-24.04.5-desktop-amd64.iso"));
-        assert!(verkey("linuxmint-22.1-cinnamon-64bit.iso") > verkey("linuxmint-22-cinnamon-64bit.iso"));
+        assert!(
+            verkey("ubuntu-26.04.1-desktop-amd64.iso") > verkey("ubuntu-26.04-desktop-amd64.iso")
+        );
+        assert!(
+            verkey("ubuntu-24.04.5.1-desktop-amd64.iso")
+                > verkey("ubuntu-24.04.5-desktop-amd64.iso")
+        );
+        assert!(
+            verkey("linuxmint-22.1-cinnamon-64bit.iso") > verkey("linuxmint-22-cinnamon-64bit.iso")
+        );
         assert!(verkey("x-13.01.iso") > verkey("x-12.03.iso"));
-        assert_eq!(verkey("ubuntu-26.04-desktop-amd64"), vec![vec![26, 4], vec![64]]);
+        assert_eq!(
+            verkey("ubuntu-26.04-desktop-amd64"),
+            vec![vec![26, 4], vec![64]]
+        );
     }
 
     #[test]
     fn sums_parsing() {
         let h = "AB".repeat(32);
         let lower = h.to_lowercase();
-        assert_eq!(sha256_from_text(&format!("x\n{h}  a.iso\n"), "a.iso"), Some(lower.clone()));
-        assert_eq!(sha256_from_text(&format!("{h} *a.iso"), "a.iso"), Some(lower.clone()));
-        assert_eq!(sha256_from_text(&format!("SHA256 (a.iso) = {h}"), "a.iso"), Some(lower.clone()));
-        assert_eq!(sha256_from_text(&format!("{h}  a.iso.torrent"), "a.iso"), None);
+        assert_eq!(
+            sha256_from_text(&format!("x\n{h}  a.iso\n"), "a.iso"),
+            Some(lower.clone())
+        );
+        assert_eq!(
+            sha256_from_text(&format!("{h} *a.iso"), "a.iso"),
+            Some(lower.clone())
+        );
+        assert_eq!(
+            sha256_from_text(&format!("SHA256 (a.iso) = {h}"), "a.iso"),
+            Some(lower.clone())
+        );
+        assert_eq!(
+            sha256_from_text(&format!("{h}  a.iso.torrent"), "a.iso"),
+            None
+        );
         assert_eq!(sha256_from_text(&format!("{h}  aXiso"), "a.iso"), None);
     }
 
     #[test]
     fn sums_ignore_html_but_read_lone_hash() {
         let digest = "ab".repeat(32);
-        let html = format!(r#"<html><img src="//a.example/icon?{}?w=48">"#, "cd".repeat(32));
+        let html = format!(
+            r#"<html><img src="//a.example/icon?{}?w=48">"#,
+            "cd".repeat(32)
+        );
         let get = |u: &str| -> Result<String> {
             match u {
                 "https://example.invalid/a.iso.sha256" => Ok(html.clone()),
-                "https://example.invalid/b.iso.sha256" => Ok(format!("{digest}  upstream-build-name.iso\n")),
+                "https://example.invalid/b.iso.sha256" => {
+                    Ok(format!("{digest}  upstream-build-name.iso\n"))
+                }
                 _ => Err(ureq::Error::StatusCode(404).into()),
             }
         };
-        assert_eq!(remote_sha256_with(&get, "https://example.invalid/a.iso", "a.iso"), None);
-        assert_eq!(remote_sha256_with(&get, "https://example.invalid/b.iso", "b.iso"), Some(digest.clone()));
+        assert_eq!(
+            remote_sha256_with(&get, "https://example.invalid/a.iso", "a.iso"),
+            None
+        );
+        assert_eq!(
+            remote_sha256_with(&get, "https://example.invalid/b.iso", "b.iso"),
+            Some(digest.clone())
+        );
         // a SHA-512 is not a SHA-256
         let get512 = |_: &str| -> Result<String> { Ok(format!("{}  c.iso", "ab".repeat(64))) };
-        assert_eq!(remote_sha256_with(&get512, "https://e.invalid/c.iso", "c.iso"), None);
+        assert_eq!(
+            remote_sha256_with(&get512, "https://e.invalid/c.iso", "c.iso"),
+            None
+        );
     }
 
     #[test]
@@ -477,7 +611,10 @@ mod tests {
         assert_eq!(urljoin(b, "./x.iso"), "https://h.org/a/b/x.iso");
         assert_eq!(urljoin(b, "../x.iso"), "https://h.org/a/x.iso");
         assert_eq!(urljoin(b, "/x.iso"), "https://h.org/x.iso");
-        assert_eq!(urljoin("https://h.org/a/idx.html", "x.iso"), "https://h.org/a/x.iso");
+        assert_eq!(
+            urljoin("https://h.org/a/idx.html", "x.iso"),
+            "https://h.org/a/x.iso"
+        );
         assert_eq!(urljoin("https://h.org", "x.iso"), "https://h.org/x.iso");
         assert_eq!(urljoin(b, "//m.org/x.iso"), "https://m.org/x.iso");
         assert_eq!(urljoin(b, "http://m.org/x.iso"), "http://m.org/x.iso");
@@ -485,7 +622,10 @@ mod tests {
 
     #[test]
     fn small_helpers() {
-        assert_eq!(host_of("https://Api.github.com:443/x?y"), "Api.github.com:443");
+        assert_eq!(
+            host_of("https://Api.github.com:443/x?y"),
+            "Api.github.com:443"
+        );
         assert_eq!(ua_for("https://downloads.sourceforge.net/x"), "Wget/1.21");
         assert_eq!(fmt_size(1536), "1.5 KiB");
         assert_eq!(fmt_size(0), "0.0 B");
@@ -496,6 +636,9 @@ mod tests {
             r#"href="(a-[\d.]+\.iso)""#,
         )
         .unwrap();
-        assert_eq!((url.as_str(), name.as_str()), ("https://h.org/d/a-1.10.iso", "a-1.10.iso"));
+        assert_eq!(
+            (url.as_str(), name.as_str()),
+            ("https://h.org/d/a-1.10.iso", "a-1.10.iso")
+        );
     }
 }

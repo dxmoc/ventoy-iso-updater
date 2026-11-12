@@ -5,7 +5,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::app::{Args, Preset, WinMethod};
-use crate::catalog::{catalog, preset_items, Item, Kind};
+use crate::catalog::{Item, Kind, catalog, preset_items};
 use crate::cleanup::{print_inventory, stick_inventory};
 use crate::drives::{detect_usb_drives, wsl_unmounted_drives};
 use crate::manifest::Manifest;
@@ -39,7 +39,11 @@ pub fn choose_dest() -> PathBuf {
     let drives = detect_usb_drives();
     println!("Where should the ISOs go?\n");
     for (i, (path, label, total)) in drives.iter().enumerate() {
-        let size = if *total > 0 { fmt_size(*total) } else { "?".to_string() };
+        let size = if *total > 0 {
+            fmt_size(*total)
+        } else {
+            "?".to_string()
+        };
         println!("  [{}] {path}  {label:<20}  {size}", i + 1);
     }
     if drives.is_empty() {
@@ -68,7 +72,11 @@ pub fn choose_dest() -> PathBuf {
         "o" => {
             let manual = ask("Path: ");
             let manual = manual.trim_matches('"');
-            if manual.is_empty() { isos() } else { PathBuf::from(manual) }
+            if manual.is_empty() {
+                isos()
+            } else {
+                PathBuf::from(manual)
+            }
         }
         c => match number(c).filter(|&i| i >= 1 && i <= drives.len() as u64) {
             Some(i) => PathBuf::from(&drives[i as usize - 1].0),
@@ -112,7 +120,10 @@ fn apply_selection(raw: &str, keys: &[&str], preselect: &HashSet<&str>) -> Vec<u
         }
     } else if !raw.is_empty() {
         // plain list -> exact selection
-        return parse_ranges(raw, keys.len()).into_iter().map(|i| i - 1).collect();
+        return parse_ranges(raw, keys.len())
+            .into_iter()
+            .map(|i| i - 1)
+            .collect();
     }
     (0..keys.len()).filter(|&i| chosen[i]).collect()
 }
@@ -120,15 +131,27 @@ fn apply_selection(raw: &str, keys: &[&str], preselect: &HashSet<&str>) -> Vec<u
 /// Numbered, category-grouped picker. `preselect` keys start as [x]; items
 /// already on the stick are listed first and marked '*', so it is obvious
 /// what would be a re-download and what is missing.
-fn custom_select(preselect: &HashSet<&str>, dest: &Path, manifest: &Manifest) -> Vec<&'static Item> {
+fn custom_select(
+    preselect: &HashSet<&str>,
+    dest: &Path,
+    manifest: &Manifest,
+) -> Vec<&'static Item> {
     let cat = catalog();
-    let numbers: BTreeMap<String, usize> = cat.iter().enumerate().map(|(i, it)| (it.key.to_string(), i + 1)).collect();
+    let numbers: BTreeMap<String, usize> = cat
+        .iter()
+        .enumerate()
+        .map(|(i, it)| (it.key.to_string(), i + 1))
+        .collect();
     let inv = stick_inventory(dest, manifest);
     print_inventory(dest, &inv, Some(&numbers));
 
     println!("\nPick items individually. Enter numbers/ranges, e.g. 1,3,5-9.");
-    println!("Prefix with '-' to remove from the preset, '+' to add. 'a'=all, ''=keep preset, 'q'=quit.");
-    println!("  [x] = selected    * = already on the stick (re-picking it only checks for updates)");
+    println!(
+        "Prefix with '-' to remove from the preset, '+' to add. 'a'=all, ''=keep preset, 'q'=quit."
+    );
+    println!(
+        "  [x] = selected    * = already on the stick (re-picking it only checks for updates)"
+    );
     let mut last = None;
     for (i, it) in cat.iter().enumerate() {
         if last != Some(it.category) {
@@ -136,8 +159,17 @@ fn custom_select(preselect: &HashSet<&str>, dest: &Path, manifest: &Manifest) ->
             last = Some(it.category);
         }
         let mark = if preselect.contains(it.key) { 'x' } else { ' ' };
-        let have = if inv.installed.contains_key(it.key) { '*' } else { ' ' };
-        println!("   [{mark}] {have} {:2}  {:<24} {}", i + 1, it.label, it.desc);
+        let have = if inv.installed.contains_key(it.key) {
+            '*'
+        } else {
+            ' '
+        };
+        println!(
+            "   [{mark}] {have} {:2}  {:<24} {}",
+            i + 1,
+            it.label,
+            it.desc
+        );
     }
 
     let raw = ask("\nSelection: ").to_lowercase();
@@ -145,12 +177,19 @@ fn custom_select(preselect: &HashSet<&str>, dest: &Path, manifest: &Manifest) ->
         quit();
     }
     let keys: Vec<&str> = cat.iter().map(|it| it.key).collect();
-    apply_selection(&raw, &keys, preselect).into_iter().map(|i| &cat[i]).collect()
+    apply_selection(&raw, &keys, preselect)
+        .into_iter()
+        .map(|i| &cat[i])
+        .collect()
 }
 
 /// Top-level 'Standard / Advanced / Everything / Custom' menu. Returns the
 /// selected catalog items in catalog order.
-pub fn choose_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> Vec<&'static Item> {
+pub fn choose_selection(
+    preset: Option<Preset>,
+    dest: &Path,
+    manifest: &Manifest,
+) -> Vec<&'static Item> {
     let none = HashSet::new();
     match preset {
         Some(Preset::Custom) => return custom_select(&none, dest, manifest),
@@ -161,17 +200,31 @@ pub fn choose_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest
 
     let count = |p| preset_items(p).len();
     println!("\nWhat should go on the stick?\n");
-    println!("  [1] Standard    ({:2} items)  one solid pick per job", count(Preset::Standard));
-    println!("  [2] Advanced    ({:2} items)  + sibling releases & more tools", count(Preset::Advanced));
-    println!("  [3] Everything  ({:2} items)  + niche and legacy items", count(Preset::Everything));
+    println!(
+        "  [1] Standard    ({:2} items)  one solid pick per job",
+        count(Preset::Standard)
+    );
+    println!(
+        "  [2] Advanced    ({:2} items)  + sibling releases & more tools",
+        count(Preset::Advanced)
+    );
+    println!(
+        "  [3] Everything  ({:2} items)  + niche and legacy items",
+        count(Preset::Everything)
+    );
     println!("  [4] Custom                 pick individually");
     println!("  [5] Custom from Standard   start with Standard, then adjust");
     println!("  [q] quit");
     if !installed.is_empty() {
-        println!("  [6] Update what's there ({:2} items)  keep the current set, just refresh it", installed.len());
-        println!("\n  -> Been here before? Take [6] first: it brings the stick up to date without\n     \
+        println!(
+            "  [6] Update what's there ({:2} items)  keep the current set, just refresh it",
+            installed.len()
+        );
+        println!(
+            "\n  -> Been here before? Take [6] first: it brings the stick up to date without\n     \
                   adding anything new. Only picking a preset on a stick this script has\n     \
-                  already filled risks queueing ISOs you never wanted.");
+                  already filled risks queueing ISOs you never wanted."
+        );
     }
     println!();
     let choice = ask("Select [1]: ").to_lowercase();
@@ -183,12 +236,19 @@ pub fn choose_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest
         "3" => preset_items(Preset::Everything),
         "4" => custom_select(&none, dest, manifest),
         "5" => {
-            let std: HashSet<&str> = preset_items(Preset::Standard).iter().map(|it| it.key).collect();
+            let std: HashSet<&str> = preset_items(Preset::Standard)
+                .iter()
+                .map(|it| it.key)
+                .collect();
             custom_select(&std, dest, manifest)
         }
         // Start from what the stick holds: the usual "just bring my stick up
         // to date" case, still adjustable before it runs.
-        "6" if !installed.is_empty() => custom_select(&installed.keys().map(String::as_str).collect(), dest, manifest),
+        "6" if !installed.is_empty() => custom_select(
+            &installed.keys().map(String::as_str).collect(),
+            dest,
+            manifest,
+        ),
         _ => {
             println!("Unrecognized choice -> Standard");
             preset_items(Preset::Standard)
@@ -199,20 +259,29 @@ pub fn choose_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest
 /// (method, headline, what it does, upside, downside). Menu order, so the
 /// recommended method is first and a bare Enter selects it.
 const WINDOWS_METHODS: [(WinMethod, &str, &str, &str, &str); 3] = [
-    (WinMethod::Massgrave, "massgrave  (recommended)",
-     "Opens the massgrave.dev page, tells you which entry to click, then \
+    (
+        WinMethod::Massgrave,
+        "massgrave  (recommended)",
+        "Opens the massgrave.dev page, tells you which entry to click, then \
       watches your Downloads folder and moves the ISO onto the stick.",
-     "always works, no admin rights, nothing upstream can block it",
-     "you click the download yourself, so the run is not unattended"),
-    (WinMethod::Uup, "uup",
-     "Pulls the build straight from Windows Update and assembles the ISO \
+        "always works, no admin rights, nothing upstream can block it",
+        "you click the download yourself, so the run is not unattended",
+    ),
+    (
+        WinMethod::Uup,
+        "uup",
+        "Pulls the build straight from Windows Update and assembles the ISO \
       locally with DISM.",
-     "official and unattended, no bot protection in the way",
-     "Windows only, needs admin, ~40 minutes and ~15 GB of free space"),
-    (WinMethod::Fido, "fido",
-     "Resolves an official, direct Microsoft download link and fetches it.",
-     "hands-off and light: no admin, no local build, no browser",
-     "Windows only, and Microsoft's anti-bot 'Sentinel' blocks it unpredictably"),
+        "official and unattended, no bot protection in the way",
+        "Windows only, needs admin, ~40 minutes and ~15 GB of free space",
+    ),
+    (
+        WinMethod::Fido,
+        "fido",
+        "Resolves an official, direct Microsoft download link and fetches it.",
+        "hands-off and light: no admin, no local build, no browser",
+        "Windows only, and Microsoft's anti-bot 'Sentinel' blocks it unpredictably",
+    ),
 ];
 
 /// textwrap.wrap for plain prose: greedy on whitespace.
@@ -234,7 +303,15 @@ fn windows_methods_menu(on_windows: bool) -> String {
     let mut s = String::from("\nHow should the Windows ISOs be fetched?\n\n");
     for (i, (method, headline, what, good, bad)) in WINDOWS_METHODS.iter().enumerate() {
         let unavailable = *method != WinMethod::Massgrave && !on_windows;
-        s += &format!("  [{}] {headline}{}\n", i + 1, if unavailable { "   (unavailable here: needs Windows)" } else { "" });
+        s += &format!(
+            "  [{}] {headline}{}\n",
+            i + 1,
+            if unavailable {
+                "   (unavailable here: needs Windows)"
+            } else {
+                ""
+            }
+        );
         for line in wrap(what, 68) {
             s += &format!("      {line}\n");
         }
@@ -264,7 +341,10 @@ fn choose_windows_method() -> WinMethod {
 /// They are in no preset because no method runs unattended; an explicit
 /// --windows wins, the method prompt only appears without it.
 pub fn choose_windows(already: &HashSet<&str>, args: &mut Args) -> Vec<&'static Item> {
-    let wins: Vec<&'static Item> = catalog().iter().filter(|it| matches!(it.kind, Kind::Windows(_))).collect();
+    let wins: Vec<&'static Item> = catalog()
+        .iter()
+        .filter(|it| matches!(it.kind, Kind::Windows(_)))
+        .collect();
     if wins.iter().any(|it| already.contains(it.key)) {
         return Vec::new(); // already picked in the custom selector
     }
@@ -281,7 +361,11 @@ pub fn choose_windows(already: &HashSet<&str>, args: &mut Args) -> Vec<&'static 
         println!("  [{}] {:<24} {}", i + 1, it.label, it.desc);
     }
     let raw = ask("Which? (e.g. 1,3 -- empty = 1,2,3): ");
-    let idx = if raw.is_empty() { (1..=wins.len().min(3)).collect() } else { parse_ranges(&raw, wins.len()) };
+    let idx = if raw.is_empty() {
+        (1..=wins.len().min(3)).collect()
+    } else {
+        parse_ranges(&raw, wins.len())
+    };
     let picked: Vec<&'static Item> = idx.into_iter().map(|i| wins[i - 1]).collect();
 
     if !picked.is_empty() && args.windows.is_none() {

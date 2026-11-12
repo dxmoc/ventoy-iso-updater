@@ -16,9 +16,16 @@ fn win_volume_label(root: &str) -> String {
     let mut fsbuf = [0u16; 261];
     // SAFETY: NUL-terminated root, buffers sized as passed, optional outputs null.
     let ok = unsafe {
-        GetVolumeInformationW(wide(root).as_ptr(), buf.as_mut_ptr(), buf.len() as u32,
-            std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(),
-            fsbuf.as_mut_ptr(), fsbuf.len() as u32)
+        GetVolumeInformationW(
+            wide(root).as_ptr(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            fsbuf.as_mut_ptr(),
+            fsbuf.len() as u32,
+        )
     };
     if ok == 0 {
         return String::new();
@@ -33,7 +40,12 @@ fn mount_total(path: &str) -> u64 {
     let mut total = 0u64;
     // SAFETY: NUL-terminated path; the two unused outputs are optional.
     let ok = unsafe {
-        GetDiskFreeSpaceExW(wide(path).as_ptr(), std::ptr::null_mut(), &mut total, std::ptr::null_mut())
+        GetDiskFreeSpaceExW(
+            wide(path).as_ptr(),
+            std::ptr::null_mut(),
+            &mut total,
+            std::ptr::null_mut(),
+        )
     };
     if ok == 0 { 0 } else { total }
 }
@@ -41,7 +53,9 @@ fn mount_total(path: &str) -> u64 {
 #[cfg(unix)]
 #[allow(clippy::unnecessary_cast)] // field types differ between Linux and macOS
 fn mount_total(path: &str) -> u64 {
-    let Ok(c) = std::ffi::CString::new(path) else { return 0 };
+    let Ok(c) = std::ffi::CString::new(path) else {
+        return 0;
+    };
     // SAFETY: statvfs only writes into the zeroed struct we own.
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
@@ -55,7 +69,10 @@ fn mount_total(path: &str) -> u64 {
 fn is_mount(path: &str) -> bool {
     use std::os::unix::fs::MetadataExt;
     let p = std::path::Path::new(path);
-    let (Ok(m), Ok(parent)) = (std::fs::symlink_metadata(p), std::fs::symlink_metadata(p.join(".."))) else {
+    let (Ok(m), Ok(parent)) = (
+        std::fs::symlink_metadata(p),
+        std::fs::symlink_metadata(p.join("..")),
+    ) else {
         return false;
     };
     !m.file_type().is_symlink() && (m.dev() != parent.dev() || m.ino() == parent.ino())
@@ -66,7 +83,8 @@ fn is_mount(path: &str) -> bool {
 fn is_wsl() -> bool {
     std::env::var_os("WSL_DISTRO_NAME").is_some()
         || std::env::var_os("WSL_INTEROP").is_some()
-        || std::fs::read_to_string("/proc/version").is_ok_and(|v| v.to_lowercase().contains("microsoft"))
+        || std::fs::read_to_string("/proc/version")
+            .is_ok_and(|v| v.to_lowercase().contains("microsoft"))
 }
 
 /// (device, mountpoint, fstype)
@@ -75,7 +93,9 @@ type Mount = (String, String, String);
 
 #[cfg(unix)]
 fn proc_mounts() -> Vec<Mount> {
-    std::fs::read("/proc/mounts").map(|b| parse_mounts(&String::from_utf8_lossy(&b))).unwrap_or_default()
+    std::fs::read("/proc/mounts")
+        .map(|b| parse_mounts(&String::from_utf8_lossy(&b)))
+        .unwrap_or_default()
 }
 
 /// Mountpoints in /proc/mounts are octal-escaped (a space is "\040"), so decode
@@ -90,7 +110,9 @@ fn parse_mounts(raw: &str) -> Vec<Mount> {
                 return None;
             }
             let mnt = esc.replace_all(parts[1], |c: &regex::Captures| {
-                char::from_u32(u32::from_str_radix(&c[1], 8).unwrap()).unwrap().to_string()
+                char::from_u32(u32::from_str_radix(&c[1], 8).unwrap())
+                    .unwrap()
+                    .to_string()
             });
             Some((parts[0].to_string(), mnt.into_owned(), parts[2].to_string()))
         })
@@ -107,7 +129,8 @@ fn block_is_removable(device: &str, sys_block: &std::path::Path) -> bool {
         name.pop();
     }
     !name.is_empty()
-        && std::fs::read_to_string(sys_block.join(&name).join("removable")).is_ok_and(|s| s.trim() == "1")
+        && std::fs::read_to_string(sys_block.join(&name).join("removable"))
+            .is_ok_and(|s| s.trim() == "1")
 }
 
 /// Run a command, capture stdout; None on spawn error, failure or timeout.
@@ -116,7 +139,12 @@ fn output_within(cmd: &mut std::process::Command, secs: u64) -> Option<Vec<u8>> 
     use std::io::Read;
     use std::process::Stdio;
     use std::time::{Duration, Instant};
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
     let deadline = Instant::now() + Duration::from_secs(secs);
     // shortcut: stdout is read after exit, fine for a few lines, would block past the 64 KiB pipe buffer
     let status = loop {
@@ -144,7 +172,12 @@ fn wsl_windows_removable() -> Vec<(String, String, u64)> {
         Where-Object { $_.DriveType -eq 2 } | \
         ForEach-Object { \"$($_.DeviceID)|$($_.VolumeName)|$($_.Size)\" }";
     output_within(
-        std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", CMD]),
+        std::process::Command::new("powershell.exe").args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            CMD,
+        ]),
         25,
     )
     .map(|out| parse_wsl_removable(&String::from_utf8_lossy(&out)))
@@ -161,9 +194,20 @@ fn parse_wsl_removable(out: &str) -> Vec<(String, String, u64)> {
                 return None;
             }
             let digits = !parts[2].is_empty() && parts[2].bytes().all(|b| b.is_ascii_digit());
-            let label = if parts[1].is_empty() { "(no label)" } else { parts[1] };
-            Some((letter.to_lowercase().to_string(), label.to_string(),
-                  if digits { parts[2].parse().unwrap_or(0) } else { 0 }))
+            let label = if parts[1].is_empty() {
+                "(no label)"
+            } else {
+                parts[1]
+            };
+            Some((
+                letter.to_lowercase().to_string(),
+                label.to_string(),
+                if digits {
+                    parts[2].parse().unwrap_or(0)
+                } else {
+                    0
+                },
+            ))
         })
         .collect()
 }
@@ -179,8 +223,14 @@ fn drvfs_candidates(mounts: &[Mount]) -> Vec<Drive> {
         .iter()
         .filter(|(_, _, fs)| matches!(fs.as_str(), "drvfs" | "9p" | "virtiofs"))
         .filter_map(|(_, mnt, _)| {
-            let l = mnt.strip_prefix("/mnt/").filter(|l| l.len() == 1 && l.as_bytes()[0].is_ascii_lowercase() && *l != "c")?;
-            Some((mnt.clone(), format!("{}: windows drive (unverified)", l.to_uppercase()), mount_total(mnt)))
+            let l = mnt
+                .strip_prefix("/mnt/")
+                .filter(|l| l.len() == 1 && l.as_bytes()[0].is_ascii_lowercase() && *l != "c")?;
+            Some((
+                mnt.clone(),
+                format!("{}: windows drive (unverified)", l.to_uppercase()),
+                mount_total(mnt),
+            ))
         })
         .collect()
 }
@@ -217,7 +267,11 @@ pub fn detect_usb_drives() -> Vec<Drive> {
             continue; // DRIVE_REMOVABLE
         }
         let label = win_volume_label(&root);
-        let label = if label.is_empty() { "(no label)".to_string() } else { label };
+        let label = if label.is_empty() {
+            "(no label)".to_string()
+        } else {
+            label
+        };
         let total = mount_total(&root);
         drives.push((root, label, total));
     }
@@ -235,10 +289,18 @@ pub fn detect_usb_drives() -> Vec<Drive> {
     // Linux: /proc/mounts plus the removable flag in /sys is authoritative and
     // does not care where (or whether) the desktop mounted the stick.
     for (device, mnt, _) in proc_mounts() {
-        if !device.starts_with("/dev/") || seen.contains(&mnt) || !block_is_removable(&device, Path::new("/sys/block")) {
+        if !device.starts_with("/dev/")
+            || seen.contains(&mnt)
+            || !block_is_removable(&device, Path::new("/sys/block"))
+        {
             continue;
         }
-        let label = mnt.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&mnt).to_string();
+        let label = mnt
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&mnt)
+            .to_string();
         let total = mount_total(&mnt);
         seen.insert(mnt.clone());
         drives.push((mnt, label, total));
@@ -251,7 +313,11 @@ pub fn detect_usb_drives() -> Vec<Drive> {
             .into_iter()
             .map(|(letter, label, size)| (format!("/mnt/{letter}"), label, size))
             .collect();
-        let found = if exact.is_empty() { drvfs_candidates(&proc_mounts()) } else { exact };
+        let found = if exact.is_empty() {
+            drvfs_candidates(&proc_mounts())
+        } else {
+            exact
+        };
         for (path, label, size) in found {
             if seen.contains(&path) || !is_mount(&path) {
                 continue;
@@ -269,9 +335,19 @@ pub fn detect_usb_drives() -> Vec<Drive> {
         .flatten()
         .find(|u| !u.is_empty())
         .unwrap_or_default();
-    for base in ["/Volumes".to_string(), format!("/media/{user}"), "/media".to_string(), format!("/run/media/{user}")] {
-        let Ok(dir) = std::fs::read_dir(&base) else { continue };
-        let mut entries: Vec<String> = dir.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    for base in [
+        "/Volumes".to_string(),
+        format!("/media/{user}"),
+        "/media".to_string(),
+        format!("/run/media/{user}"),
+    ] {
+        let Ok(dir) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        let mut entries: Vec<String> = dir
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
         entries.sort();
         for entry in entries {
             let path = Path::new(&base).join(&entry).to_string_lossy().into_owned();
@@ -295,7 +371,10 @@ mod tests {
     #[test]
     fn detect_usb_drives_answers_sanely() {
         for (path, _, _) in detect_usb_drives() {
-            assert!(std::path::Path::new(&path).is_dir(), "{path} is offered but is not a directory");
+            assert!(
+                std::path::Path::new(&path).is_dir(),
+                "{path} is offered but is not a directory"
+            );
         }
     }
 
@@ -304,10 +383,17 @@ mod tests {
     fn mounts_are_unescaped() {
         let raw = "/dev/sdb1 /media/me/MY\\040STICK vfat rw 0 0\n\
                    C:\\134 /mnt/c 9p rw 0 0\nshort line\n";
-        assert_eq!(parse_mounts(raw), vec![
-            ("/dev/sdb1".into(), "/media/me/MY STICK".into(), "vfat".into()),
-            ("C:\\134".into(), "/mnt/c".into(), "9p".into()),
-        ]);
+        assert_eq!(
+            parse_mounts(raw),
+            vec![
+                (
+                    "/dev/sdb1".into(),
+                    "/media/me/MY STICK".into(),
+                    "vfat".into()
+                ),
+                ("C:\\134".into(), "/mnt/c".into(), "9p".into()),
+            ]
+        );
     }
 
     #[cfg(unix)]
@@ -333,11 +419,14 @@ mod tests {
     #[test]
     fn powershell_answer_is_parsed() {
         let out = "E:|STICK|31024349184\r\nF:||\r\n\r\n1:|x|5\nG:|a|b|c\nH:|X|n/a\n";
-        assert_eq!(parse_wsl_removable(out), vec![
-            ("e".into(), "STICK".into(), 31024349184),
-            ("f".into(), "(no label)".into(), 0),
-            ("h".into(), "X".into(), 0),
-        ]);
+        assert_eq!(
+            parse_wsl_removable(out),
+            vec![
+                ("e".into(), "STICK".into(), 31024349184),
+                ("f".into(), "(no label)".into(), 0),
+                ("h".into(), "X".into(), 0),
+            ]
+        );
     }
 
     #[cfg(unix)]
@@ -345,11 +434,24 @@ mod tests {
     fn drvfs_fallback_skips_system_drive() {
         let m = |mnt: &str, fs: &str| ("x".to_string(), mnt.to_string(), fs.to_string());
         let found = drvfs_candidates(&[
-            m("/mnt/c", "9p"), m("/mnt/d", "drvfs"), m("/mnt/e", "virtiofs"),
-            m("/mnt/f", "ext4"), m("/mnt/wsl", "9p"), m("/mnt/G", "drvfs"),
+            m("/mnt/c", "9p"),
+            m("/mnt/d", "drvfs"),
+            m("/mnt/e", "virtiofs"),
+            m("/mnt/f", "ext4"),
+            m("/mnt/wsl", "9p"),
+            m("/mnt/G", "drvfs"),
         ]);
-        let got: Vec<_> = found.iter().map(|(p, l, _)| (p.as_str(), l.as_str())).collect();
-        assert_eq!(got, [("/mnt/d", "D: windows drive (unverified)"), ("/mnt/e", "E: windows drive (unverified)")]);
+        let got: Vec<_> = found
+            .iter()
+            .map(|(p, l, _)| (p.as_str(), l.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("/mnt/d", "D: windows drive (unverified)"),
+                ("/mnt/e", "E: windows drive (unverified)")
+            ]
+        );
     }
 
     #[cfg(unix)]

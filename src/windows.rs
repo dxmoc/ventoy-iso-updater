@@ -10,16 +10,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use regex::Regex;
 use serde_json::Value;
 
+use crate::Summary;
 use crate::app::{Args, WinMethod};
 use crate::catalog::{Item, Kind, WinSpec};
 use crate::download::{fetch_tracked, move_with_progress};
-use crate::manifest::{entry_filename, record_version, Manifest};
-use crate::net::{http_get, verkey, Meta};
-use crate::Summary;
+use crate::manifest::{Manifest, entry_filename, record_version};
+use crate::net::{Meta, http_get, verkey};
 
 const FIDO_URL: &str = "https://raw.githubusercontent.com/pbatard/Fido/master/Fido.ps1";
 const UUP_API: &str = "https://api.uupdump.net";
@@ -29,7 +29,10 @@ const UUP_GET: &str = "https://uupdump.net/get.php";
 type Todo = (&'static str, &'static str, &'static WinSpec);
 
 fn spec(it: &'static Item) -> Option<&'static WinSpec> {
-    match &it.kind { Kind::Windows(p) => Some(p), _ => None }
+    match &it.kind {
+        Kind::Windows(p) => Some(p),
+        _ => None,
+    }
 }
 
 fn fill(tmpl: &str, build: &str) -> String {
@@ -40,22 +43,41 @@ fn fill(tmpl: &str, build: &str) -> String {
 /// the massgrave markdown. A failed lookup keeps its fallback -- the build only
 /// shapes the target filename.
 fn detect_windows_builds() -> HashMap<&'static str, String> {
-    let mut builds: HashMap<&str, String> = [("11", "26200.8655"), ("10", "19045.6456"),
-        ("2022", "20348.5256"), ("2025", "26100.32995")]
-        .into_iter().map(|(k, v)| (k, v.to_string())).collect();
-    let md = |file: &str| http_get(&format!(
-        "https://raw.githubusercontent.com/massgravel/massgrave.dev/main/docs/{file}")).ok();
+    let mut builds: HashMap<&str, String> = [
+        ("11", "26200.8655"),
+        ("10", "19045.6456"),
+        ("2022", "20348.5256"),
+        ("2025", "26100.32995"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k, v.to_string()))
+    .collect();
+    let md = |file: &str| {
+        http_get(&format!(
+            "https://raw.githubusercontent.com/massgravel/massgrave.dev/main/docs/{file}"
+        ))
+        .ok()
+    };
     let grab = |md: &str, re: &str| Regex::new(re).ok()?.captures(md).map(|c| c[1].to_string());
     if let Some(md) = md("windows_11_links.md")
-        && let Some(b) = grab(&md, r"(?s)Consumer 25H2.{0,60}?Build - ([\d.]+)[^\n]*Latest") {
+        && let Some(b) = grab(
+            &md,
+            r"(?s)Consumer 25H2.{0,60}?Build - ([\d.]+)[^\n]*Latest",
+        )
+    {
         builds.insert("11", b);
     }
-    if let Some(md) = md("windows_10_links.md") && let Some(b) = grab(&md, r"Build - (19045\.\d+)") {
+    if let Some(md) = md("windows_10_links.md")
+        && let Some(b) = grab(&md, r"Build - (19045\.\d+)")
+    {
         builds.insert("10", b);
     }
     if let Some(md) = md("windows-server-links.md") {
         for year in ["2025", "2022"] {
-            if let Some(b) = grab(&md, &format!(r"(?s)Windows Server {year}.*?Build - ([\d.]+)")) {
+            if let Some(b) = grab(
+                &md,
+                &format!(r"(?s)Windows Server {year}.*?Build - ([\d.]+)"),
+            ) {
                 builds.insert(year, b);
             }
         }
@@ -82,9 +104,14 @@ fn shell_execute(verb: &str, file: &str, params: Option<&str>) -> bool {
     let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (verb, file, params) = (wide(verb), wide(file), params.map(wide));
     let rc = unsafe {
-        ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), file.as_ptr(),
-                      params.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
-                      std::ptr::null(), SW_SHOWNORMAL)
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            params.as_ref().map_or(std::ptr::null(), |p| p.as_ptr()),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
     };
     rc as isize > 32
 }
@@ -92,7 +119,9 @@ fn shell_execute(verb: &str, file: &str, params: Option<&str>) -> bool {
 /// Relaunch elevated (UAC); true if the elevated copy took over.
 #[cfg(windows)]
 pub fn relaunch_as_admin() -> bool {
-    let Ok(exe) = std::env::current_exe() else { return false };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     // The update notice was already shown in this window. (Not added twice:
     // clap rejects a repeated flag where argparse did not.)
@@ -111,7 +140,11 @@ pub fn relaunch_as_admin() -> bool {
 /// shutil.which: the first PATH entry holding `name` (with PATHEXT on Windows).
 fn which(name: &str) -> Option<PathBuf> {
     let exts: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE".into()).split(';').map(str::to_string).collect()
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE".into())
+            .split(';')
+            .map(str::to_string)
+            .collect()
     } else {
         vec![String::new()]
     };
@@ -137,17 +170,22 @@ fn run_timeout(cmd: &mut Command, secs: u64) -> Result<()> {
 
 /// Percent-encode a query value (only unreserved characters stay as they are).
 fn pct(s: &str) -> String {
-    s.bytes().map(|b| match b {
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
-        _ => format!("%{b:02X}"),
-    }).collect()
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 /// Last path segment of a URL (Python: basename(urlparse(url).path)).
 fn url_basename(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let path = rest.split(['?', '#']).next().unwrap_or("");
-    path.find('/').map_or("", |i| path[i..].rsplit('/').next().unwrap_or(""))
+    path.find('/')
+        .map_or("", |i| path[i..].rsplit('/').next().unwrap_or(""))
 }
 
 /// Open a page the way Python's webbrowser.open would; false if nothing could.
@@ -158,12 +196,26 @@ fn open_browser(url: &str) -> bool {
     }
     #[cfg(not(windows))]
     {
-        let wsl = std::env::var_os("WSL_DISTRO_NAME").is_some() || std::env::var_os("WSL_INTEROP").is_some()
-            || fs::read_to_string("/proc/version").is_ok_and(|v| v.to_lowercase().contains("microsoft"));
-        let tools: &[&str] = if cfg!(target_os = "macos") { &["open"] }
-            else if wsl { &["wslview", "explorer.exe"] } else { &["xdg-open"] };
-        tools.iter().any(|t| Command::new(t).arg(url).stdin(Stdio::null())
-            .stdout(Stdio::null()).stderr(Stdio::null()).spawn().is_ok())
+        let wsl = std::env::var_os("WSL_DISTRO_NAME").is_some()
+            || std::env::var_os("WSL_INTEROP").is_some()
+            || fs::read_to_string("/proc/version")
+                .is_ok_and(|v| v.to_lowercase().contains("microsoft"));
+        let tools: &[&str] = if cfg!(target_os = "macos") {
+            &["open"]
+        } else if wsl {
+            &["wslview", "explorer.exe"]
+        } else {
+            &["xdg-open"]
+        };
+        tools.iter().any(|t| {
+            Command::new(t)
+                .arg(url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .is_ok()
+        })
     }
 }
 
@@ -181,20 +233,33 @@ fn fido_url(ps: &Path, fido: &Path, win: &str, lang: &str) -> Result<String> {
     // Output goes through files: no pipe to drain while waiting with a timeout.
     let tmp = std::env::temp_dir();
     let (out_p, err_p) = (tmp.join("ventoy_fido.out"), tmp.join("ventoy_fido.err"));
-    let run = run_timeout(Command::new(ps)
-        .args(["-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]).arg(fido)
-        .args(["-Win", win, "-Rel", "Latest", "-Lang", lang, "-Arch", "x64", "-GetUrl"])
-        .stdin(Stdio::null())
-        .stdout(fs::File::create(&out_p)?).stderr(fs::File::create(&err_p)?), 180);
+    let run = run_timeout(
+        Command::new(ps)
+            .args(["-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(fido)
+            .args([
+                "-Win", win, "-Rel", "Latest", "-Lang", lang, "-Arch", "x64", "-GetUrl",
+            ])
+            .stdin(Stdio::null())
+            .stdout(fs::File::create(&out_p)?)
+            .stderr(fs::File::create(&err_p)?),
+        180,
+    );
     let read = |p: &Path| String::from_utf8_lossy(&fs::read(p).unwrap_or_default()).into_owned();
     let (out, err) = (read(&out_p), read(&err_p));
     let _ = (fs::remove_file(&out_p), fs::remove_file(&err_p));
     run?;
-    let url = out.lines().map(str::trim).rfind(|l| l.to_lowercase().starts_with("http"));
+    let url = out
+        .lines()
+        .map(str::trim)
+        .rfind(|l| l.to_lowercase().starts_with("http"));
     match url {
         Some(u) => Ok(u.to_string()),
         None => {
-            let msg = out.lines().find(|l| l.to_lowercase().contains("error")).map(str::trim)
+            let msg = out
+                .lines()
+                .find(|l| l.to_lowercase().contains("error"))
+                .map(str::trim)
                 .filter(|l| !l.is_empty())
                 .or(Some(err.trim()).filter(|e| !e.is_empty()))
                 .unwrap_or("no URL");
@@ -204,21 +269,40 @@ fn fido_url(ps: &Path, fido: &Path, win: &str, lang: &str) -> Result<String> {
 }
 
 /// The stored filename if `key` is already on the stick in release `rel`.
-fn up_to_date(dest: &Path, manifest: &Manifest, args: &Args, key: &str, rel: &str) -> Option<String> {
+fn up_to_date(
+    dest: &Path,
+    manifest: &Manifest,
+    args: &Args,
+    key: &str,
+    rel: &str,
+) -> Option<String> {
     let stored = entry_filename(manifest, key)?;
     (!args.force && !stored.is_empty() && stored.contains(rel) && dest.join(stored).exists())
         .then(|| stored.to_string())
 }
 
 /// True if at least one selected Windows ISO is missing/outdated.
-pub fn windows_needs_build(dest: &Path, manifest: &Manifest, args: &Args, items: &[&'static Item]) -> bool {
-    items.iter().filter_map(|it| spec(it).map(|p| (it, p)))
+pub fn windows_needs_build(
+    dest: &Path,
+    manifest: &Manifest,
+    args: &Args,
+    items: &[&'static Item],
+) -> bool {
+    items
+        .iter()
+        .filter_map(|it| spec(it).map(|p| (it, p)))
         .any(|(it, p)| up_to_date(dest, manifest, args, it.key, p.rel).is_none())
 }
 
 /// Download the selected Windows ISOs via the chosen method (--windows):
 /// massgrave hand-off (default), fido, or uup with a local build.
-pub fn process_windows(dest: &Path, manifest: &mut Manifest, args: &Args, items: &[&'static Item], summary: &mut Summary) {
+pub fn process_windows(
+    dest: &Path,
+    manifest: &mut Manifest,
+    args: &Args,
+    items: &[&'static Item],
+    summary: &mut Summary,
+) {
     let mut todo: Vec<Todo> = Vec::new();
     for it in items {
         let Some(p) = spec(it) else { continue };
@@ -257,15 +341,23 @@ pub fn process_windows(dest: &Path, manifest: &mut Manifest, args: &Args, items:
 
 /// True if `pid` still refers to a running process (best-effort).
 fn pid_alive(pid: &str) -> bool {
-    let Ok(pid) = pid.parse::<u32>() else { return false };
+    let Ok(pid) = pid.parse::<u32>() else {
+        return false;
+    };
     if cfg!(windows) {
-        Command::new("tasklist").args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .stderr(Stdio::null()).output()
+        Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .stderr(Stdio::null())
+            .output()
             .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
     } else {
         // /proc where it exists (no `kill` binary in minimal Linux images), else kill -0.
-        Path::new(&format!("/proc/{pid}")).exists() || Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null())
-            .status().is_ok_and(|s| s.success())
+        Path::new(&format!("/proc/{pid}")).exists()
+            || Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
     }
 }
 
@@ -273,7 +365,8 @@ fn pid_alive(pid: &str) -> bool {
 /// (e.g. "11"/"25H2") from the UUP dump index.
 fn uup_latest_uuid(win: &str, rel: &str) -> Result<(String, String)> {
     let q = pct(&format!("Windows {win} {rel} amd64"));
-    let data: Value = serde_json::from_str(&http_get(&format!("{UUP_API}/listid.php?search={q}"))?)?;
+    let data: Value =
+        serde_json::from_str(&http_get(&format!("{UUP_API}/listid.php?search={q}"))?)?;
     let items: Vec<&Value> = match &data["response"]["builds"] {
         Value::Array(a) => a.iter().collect(),
         Value::Object(o) => o.values().collect(),
@@ -281,32 +374,68 @@ fn uup_latest_uuid(win: &str, rel: &str) -> Result<(String, String)> {
     };
     let bad = ["insider", "dev", "beta", "canary", "preview"];
     let title = |b: &Value| b["title"].as_str().unwrap_or("").to_lowercase();
-    let cand: Vec<&Value> = items.into_iter().filter(|b| {
-        let t = title(b);
-        b["arch"] == "amd64" && t.contains(&rel.to_lowercase()) && !bad.iter().any(|w| t.contains(w))
-    }).collect();
+    let cand: Vec<&Value> = items
+        .into_iter()
+        .filter(|b| {
+            let t = title(b);
+            b["arch"] == "amd64"
+                && t.contains(&rel.to_lowercase())
+                && !bad.iter().any(|w| t.contains(w))
+        })
+        .collect();
     // rev(): max_by_key keeps the last maximum, Python's max() the first.
-    let best = cand.iter().rev().max_by_key(|b| verkey(b["build"].as_str().unwrap_or("0")))
+    let best = cand
+        .iter()
+        .rev()
+        .max_by_key(|b| verkey(b["build"].as_str().unwrap_or("0")))
         .ok_or_else(|| anyhow!("no retail UUP build for Windows {win} {rel}"))?;
     let uuid = best["uuid"].as_str().ok_or_else(|| anyhow!("'uuid'"))?;
-    Ok((uuid.to_string(), best["build"].as_str().unwrap_or("?").to_string()))
+    Ok((
+        uuid.to_string(),
+        best["build"].as_str().unwrap_or("?").to_string(),
+    ))
 }
 
 /// Fetch the UUP dump convert package, run it (downloads the UUP set from
 /// Windows Update and assembles the ISO with DISM), then move the finished ISO
 /// onto the stick. Returns (out_path, save_name, build). Needs admin.
-fn uup_build_iso(win: &str, rel: &str, lang: &str, editions: &str, work_root: &Path, dest: &Path,
-                 tmpl: &str) -> Result<(PathBuf, String, String)> {
+fn uup_build_iso(
+    win: &str,
+    rel: &str,
+    lang: &str,
+    editions: &str,
+    work_root: &Path,
+    dest: &Path,
+    tmpl: &str,
+) -> Result<(PathBuf, String, String)> {
     let (uuid, build) = uup_latest_uuid(win, rel)?;
     let save_name = fill(tmpl, &build);
-    println!("    build {}  (uuid {})", build, uuid.chars().take(8).collect::<String>());
+    println!(
+        "    build {}  (uuid {})",
+        build,
+        uuid.chars().take(8).collect::<String>()
+    );
 
-    let url = format!("{UUP_GET}?id={}&pack={}&edition={}", pct(&uuid), pct(lang), pct(editions));
-    let ua = format!("Mozilla/5.0 (Windows NT 10.0; Win64; x64) VentoyISOUpdater/{}", crate::VERSION);
-    let pkg = ureq::post(&url).header("User-Agent", &ua)
-        .config().timeout_global(Some(Duration::from_secs(120))).build()
+    let url = format!(
+        "{UUP_GET}?id={}&pack={}&edition={}",
+        pct(&uuid),
+        pct(lang),
+        pct(editions)
+    );
+    let ua = format!(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VentoyISOUpdater/{}",
+        crate::VERSION
+    );
+    let pkg = ureq::post(&url)
+        .header("User-Agent", &ua)
+        .config()
+        .timeout_global(Some(Duration::from_secs(120)))
+        .build()
         .send_form([("autodl", "2"), ("updates", "1"), ("cleanup", "1")])?
-        .body_mut().with_config().limit(u64::MAX).read_to_vec()?;
+        .body_mut()
+        .with_config()
+        .limit(u64::MAX)
+        .read_to_vec()?;
 
     // Build dir must be space-free (the UUP converter refuses spaces in paths).
     let bdir = work_root.join(format!("uup_{win}_{lang}_{build}"));
@@ -314,9 +443,14 @@ fn uup_build_iso(win: &str, rel: &str, lang: &str, editions: &str, work_root: &P
     if lock.exists() {
         // Another run (or a crashed one) owns this directory. Never clobber a
         // build in progress -- concurrent runs corrupt each other's downloads.
-        let owner = fs::read_to_string(&lock).map(|s| s.trim().to_string()).unwrap_or_else(|_| "?".into());
+        let owner = fs::read_to_string(&lock)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "?".into());
         if pid_alive(&owner) {
-            bail!("another build (pid {owner}) is already using {}", bdir.display());
+            bail!(
+                "another build (pid {owner}) is already using {}",
+                bdir.display()
+            );
         }
         println!("    (clearing stale build dir from pid {owner})");
     }
@@ -330,7 +464,11 @@ fn uup_build_iso(win: &str, rel: &str, lang: &str, editions: &str, work_root: &P
                 kept = fs::read_dir(&p).map(|d| d.count()).unwrap_or(0);
                 continue;
             }
-            let _ = if p.is_dir() { fs::remove_dir_all(&p) } else { fs::remove_file(&p) };
+            let _ = if p.is_dir() {
+                fs::remove_dir_all(&p)
+            } else {
+                fs::remove_file(&p)
+            };
         }
         if kept > 0 {
             println!("    reusing {kept} already-downloaded UUP files");
@@ -351,7 +489,8 @@ fn uup_build_iso(win: &str, rel: &str, lang: &str, editions: &str, work_root: &P
         // Best-effort: if the target is locked (a concurrent build has it open)
         // leave the bundled downloader in place rather than failing the ISO.
         if let Err(e) = fs::copy(&cache, fdir.join("aria2c.exe"))
-            .and_then(|_| fs::write(fdir.join("get_aria2.ps1"), "Exit 0\n")) {
+            .and_then(|_| fs::write(fdir.join("get_aria2.ps1"), "Exit 0\n"))
+        {
             println!("    (could not pre-place aria2c.exe: {e} -- using the bundled downloader)");
         }
     }
@@ -366,14 +505,20 @@ fn uup_build_iso(win: &str, rel: &str, lang: &str, editions: &str, work_root: &P
     let log = bdir.join("build.log");
     let lf = fs::File::create(&log)?;
     let mut cmd = Command::new("cmd");
-    cmd.arg("/c").arg(bdir.join("uup_download_windows.cmd")).current_dir(&bdir)
-        .stdin(Stdio::null()).stdout(lf.try_clone()?).stderr(lf);
+    cmd.arg("/c")
+        .arg(bdir.join("uup_download_windows.cmd"))
+        .current_dir(&bdir)
+        .stdin(Stdio::null())
+        .stdout(lf.try_clone()?)
+        .stderr(lf);
     // The UUP scripts call their helpers by bare name (`call convert-UUP.cmd`).
     // NoDefaultCurrentDirectoryInExePath -- often set by corporate policy --
     // stops cmd.exe resolving those from the working directory, so the
     // conversion silently never runs. Drop it for the child.
     for (k, _) in std::env::vars_os() {
-        if k.to_string_lossy().eq_ignore_ascii_case("NoDefaultCurrentDirectoryInExePath") {
+        if k.to_string_lossy()
+            .eq_ignore_ascii_case("NoDefaultCurrentDirectoryInExePath")
+        {
             cmd.env_remove(k);
         }
     }
@@ -385,8 +530,14 @@ fn uup_build_iso(win: &str, rel: &str, lang: &str, editions: &str, work_root: &P
         let _ = fs::copy(&got_aria2, &cache);
     }
 
-    let src = fs::read_dir(&bdir)?.flatten()
-        .filter(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".iso"))
+    let src = fs::read_dir(&bdir)?
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .ends_with(".iso")
+        })
         .map(|e| e.path())
         .max_by_key(|p| fs::metadata(p).map(|m| m.len()).unwrap_or(0))
         .ok_or_else(|| anyhow!("UUP produced no ISO (see {})", log.display()))?;
@@ -416,9 +567,23 @@ fn process_uup(dest: &Path, manifest: &mut Manifest, todo: &[Todo], summary: &mu
             .and_then(|(out, name, build)| Ok((fs::metadata(&out)?.len(), name, build)));
         match built {
             Ok((size, name, build)) => {
-                println!("    ok  {}  ({:.2} GB)\n", name, size as f64 / (1u64 << 30) as f64);
-                let meta = Meta { size: Some(size), mtime: None };
-                record_version(dest, manifest, key, &format!("uup:{}/{}", p.win, build), &name, Some(&meta));
+                println!(
+                    "    ok  {}  ({:.2} GB)\n",
+                    name,
+                    size as f64 / (1u64 << 30) as f64
+                );
+                let meta = Meta {
+                    size: Some(size),
+                    mtime: None,
+                };
+                record_version(
+                    dest,
+                    manifest,
+                    key,
+                    &format!("uup:{}/{}", p.win, build),
+                    &name,
+                    Some(&meta),
+                );
                 summary.push((name, "OK (built via UUP)".into()));
             }
             Err(e) => {
@@ -429,7 +594,13 @@ fn process_uup(dest: &Path, manifest: &mut Manifest, todo: &[Todo], summary: &mu
     }
 }
 
-fn process_fido(dest: &Path, manifest: &mut Manifest, args: &Args, todo: &[Todo], summary: &mut Summary) {
+fn process_fido(
+    dest: &Path,
+    manifest: &mut Manifest,
+    args: &Args,
+    todo: &[Todo],
+    summary: &mut Summary,
+) {
     let ps = which("powershell").or_else(|| which("pwsh"));
     let mut fallback: Vec<Todo> = Vec::new();
     let mut fido: Option<PathBuf> = None;
@@ -449,12 +620,27 @@ fn process_fido(dest: &Path, manifest: &mut Manifest, args: &Args, todo: &[Todo]
                 }
             }
         }
-        println!("==> {:<24} querying Microsoft via Fido ({})...", label, p.lang);
+        println!(
+            "==> {:<24} querying Microsoft via Fido ({})...",
+            label, p.lang
+        );
         match fido_url(ps, fido.as_deref().unwrap_or(Path::new("")), p.win, p.lang) {
             Ok(url) => {
-                let name = Some(url_basename(&url)).filter(|n| !n.is_empty())
+                let name = Some(url_basename(&url))
+                    .filter(|n| !n.is_empty())
                     .map_or_else(|| fill(p.tmpl, p.rel), str::to_string);
-                fetch_tracked(dest, manifest, key, label, &url, &name, &[], args, summary, None);
+                fetch_tracked(
+                    dest,
+                    manifest,
+                    key,
+                    label,
+                    &url,
+                    &name,
+                    &[],
+                    args,
+                    summary,
+                    None,
+                );
             }
             Err(e) => {
                 println!("    Fido failed ({e}) -> massgrave fallback\n");
@@ -480,8 +666,17 @@ struct Plan {
 }
 
 fn iso_files(folders: &[PathBuf]) -> Vec<PathBuf> {
-    folders.iter().filter_map(|d| fs::read_dir(d).ok()).flatten().flatten()
-        .filter(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".iso"))
+    folders
+        .iter()
+        .filter_map(|d| fs::read_dir(d).ok())
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .ends_with(".iso")
+        })
         .map(|e| e.path())
         .collect()
 }
@@ -491,7 +686,11 @@ fn match_score(fname: &str, win: &str, lang: &str) -> u32 {
     let n = fname.to_lowercase().replace(['-', ' '], "_");
     // Consumer names read "win_11"/"windows_10"; Server names "windows_server_2025".
     // (\D|$) stands in for Python's (?!\d), which the regex crate lacks.
-    let re = Regex::new(&format!(r"(win(dows)?|server)_?{}(\D|$)", regex::escape(win))).expect("valid regex");
+    let re = Regex::new(&format!(
+        r"(win(dows)?|server)_?{}(\D|$)",
+        regex::escape(win)
+    ))
+    .expect("valid regex");
     if !re.is_match(&n) {
         return 0; // wrong Windows version
     }
@@ -500,7 +699,11 @@ fn match_score(fname: &str, win: &str, lang: &str) -> u32 {
         "English" => &["english", "en_us"],
         _ => &[],
     };
-    if words.iter().any(|w| n.contains(w)) { 4 } else { 2 }
+    if words.iter().any(|w| n.contains(w)) {
+        4
+    } else {
+        2
+    }
 }
 
 const WATCH_POLL: Duration = Duration::from_secs(2); // between folder scans
@@ -519,8 +722,15 @@ const WATCH_HEARTBEAT: Duration = Duration::from_secs(60); // between "still wai
 /// measured as a timestamp, not as "unchanged between two polls": moving an
 /// ISO onto the stick blocks this loop for minutes, and a poll-to-poll rule
 /// would make everything that finished meanwhile wait out another cycle.
-fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, summary: &mut Summary, wait_min: u64) {
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default();
+fn windows_watch_rename(
+    dest: &Path,
+    manifest: &mut Manifest,
+    plan: Vec<Plan>,
+    summary: &mut Summary,
+    wait_min: u64,
+) {
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default();
     let downloads = PathBuf::from(home).join("Downloads");
     let folders = [dest.to_path_buf(), downloads.clone()];
     let mut known: HashSet<PathBuf> = iso_files(&folders).into_iter().collect(); // ignore what's already there
@@ -535,7 +745,9 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
     println!("Each ISO is renamed and moved onto the stick automatically.");
     println!("Copying one onto the stick takes a few minutes and pauses the");
     println!("watch -- anything you download meanwhile is picked up right after.");
-    println!("Press Ctrl+C when you're done / want to skip the rest. DONT PANIC IF IT LOOKS STUCK!\n");
+    println!(
+        "Press Ctrl+C when you're done / want to skip the rest. DONT PANIC IF IT LOOKS STUCK!\n"
+    );
 
     let started = Instant::now();
     let deadline = started + Duration::from_secs(wait_min * 60);
@@ -554,7 +766,9 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
             if known.contains(&path) {
                 continue;
             }
-            let Ok(size) = fs::metadata(&path).map(|m| m.len()) else { continue };
+            let Ok(size) = fs::metadata(&path).map(|m| m.len()) else {
+                continue;
+            };
             if size < 1 << 30 {
                 continue; // too small to be a Windows ISO
             }
@@ -570,9 +784,16 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
                     continue;
                 }
             }
-            let base = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let mut scored: Vec<(u32, usize)> = pending.iter().enumerate()
-                .map(|(i, e)| (match_score(&base, e.win, e.lang), i)).collect();
+            let base = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let mut scored: Vec<(u32, usize)> = pending
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (match_score(&base, e.win, e.lang), i))
+                .collect();
             scored.sort_by_key(|s| std::cmp::Reverse(s.0)); // stable, like sorted(reverse=True)
             let (best_score, mut best) = scored[0];
             if best_score < 4 {
@@ -596,8 +817,18 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
             })();
             match moved {
                 Ok(size) => {
-                    let meta = Meta { size: Some(size), mtime: None };
-                    record_version(dest, manifest, e.key, "massgrave (manual)", &e.target, Some(&meta));
+                    let meta = Meta {
+                        size: Some(size),
+                        mtime: None,
+                    };
+                    record_version(
+                        dest,
+                        manifest,
+                        e.key,
+                        "massgrave (manual)",
+                        &e.target,
+                        Some(&meta),
+                    );
                     summary.push((e.target.clone(), "OK (manual, renamed)".into()));
                     pending.remove(best);
                     known.insert(path.clone());
@@ -619,7 +850,11 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
         }
         let now = Instant::now();
         if now >= next_beat {
-            println!("  still waiting for {} ISO(s) -- {} min elapsed", pending.len(), (now - started).as_secs() / 60);
+            println!(
+                "  still waiting for {} ISO(s) -- {} min elapsed",
+                pending.len(),
+                (now - started).as_secs() / 60
+            );
             next_beat = now + WATCH_HEARTBEAT;
         }
         thread::sleep(WATCH_POLL);
@@ -634,11 +869,17 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
 /// Open the massgrave pages, then watch for and rename what gets saved.
 fn massgrave_handoff(dest: &Path, manifest: &mut Manifest, items: &[Todo], summary: &mut Summary) {
     let builds = detect_windows_builds();
-    let plan: Vec<Plan> = items.iter().map(|&(key, _label, p)| Plan {
-        key,
-        target: fill(p.tmpl, builds.get(p.win).map_or("unknown", String::as_str)),
-        win: p.win, lang: p.lang, page: p.page, pick: p.pick,
-    }).collect();
+    let plan: Vec<Plan> = items
+        .iter()
+        .map(|&(key, _label, p)| Plan {
+            key,
+            target: fill(p.tmpl, builds.get(p.win).map_or("unknown", String::as_str)),
+            win: p.win,
+            lang: p.lang,
+            page: p.page,
+            pick: p.pick,
+        })
+        .collect();
 
     println!("\n{0} WINDOWS ISOs (massgrave.dev) {0}", "=".repeat(16));
     println!("massgrave's Windows ISOs are browser-only (rotating mirror links),");
@@ -668,7 +909,10 @@ mod tests {
         assert_eq!(match_score(en11, "11", "English"), 4);
         assert_eq!(match_score(en11, "11", "German"), 2);
         assert_eq!(match_score(en11, "10", "English"), 0);
-        assert_eq!(match_score("Win10_22H2_German_x64v1.iso", "10", "German"), 4);
+        assert_eq!(
+            match_score("Win10_22H2_German_x64v1.iso", "10", "German"),
+            4
+        );
         assert_eq!(match_score("Win 11 25H2 Deutsch.iso", "11", "German"), 4);
         assert_eq!(match_score("Win_110.iso", "11", "English"), 0);
         let srv = "en-us_windows_server_2025_updated_x64_dvd.iso";
@@ -678,12 +922,18 @@ mod tests {
 
     #[test]
     fn helpers() {
-        assert_eq!(url_basename("https://h.example/a/b/Win11_25H2_German_x64.iso?t=1&e=2"), "Win11_25H2_German_x64.iso");
+        assert_eq!(
+            url_basename("https://h.example/a/b/Win11_25H2_German_x64.iso?t=1&e=2"),
+            "Win11_25H2_German_x64.iso"
+        );
         assert_eq!(url_basename("https://h.example"), "");
         assert_eq!(url_basename("https://h.example/dir/"), "");
         assert_eq!(pct("Windows 11 25H2 amd64"), "Windows%2011%2025H2%20amd64");
         assert_eq!(pct("core;professional"), "core%3Bprofessional");
-        assert_eq!(fill("Win_11_25H2_German_{}.iso", "26200.1"), "Win_11_25H2_German_26200.1.iso");
+        assert_eq!(
+            fill("Win_11_25H2_German_{}.iso", "26200.1"),
+            "Win_11_25H2_German_26200.1.iso"
+        );
         assert!(!pid_alive("not-a-pid"));
         assert!(pid_alive(&std::process::id().to_string()));
     }
@@ -696,8 +946,10 @@ mod tests {
         for f in ["a.ISO", "b.iso", "c.txt"] {
             fs::write(dir.join(f), "").unwrap();
         }
-        let mut got: Vec<String> = iso_files(&[dir.clone(), dir.join("missing")]).iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let mut got: Vec<String> = iso_files(&[dir.clone(), dir.join("missing")])
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
         got.sort();
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(got, ["a.ISO", "b.iso"]);

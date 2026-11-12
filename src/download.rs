@@ -8,10 +8,10 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 
+use crate::Summary;
 use crate::app::Args;
 use crate::manifest::{self, Check, Manifest};
 use crate::net::{self, Stream, fmt_size};
-use crate::Summary;
 
 /// Render one progress line: %, sizes, and live speed in MB/s + Mbit/s.
 fn progress(done: u64, total: Option<u64>, bps: f64, last: bool) {
@@ -19,8 +19,14 @@ fn progress(done: u64, total: Option<u64>, bps: f64, last: bool) {
     let line = match total {
         Some(t) if t > 0 => format!(
             "    {:5.1}%  {} / {}  @ {mbps:6.2} MB/s ({mbit:6.1} Mbit/s)",
-            done as f64 * 100.0 / t as f64, fmt_size(done), fmt_size(t)),
-        _ => format!("    {}  @ {mbps:6.2} MB/s ({mbit:6.1} Mbit/s)", fmt_size(done)),
+            done as f64 * 100.0 / t as f64,
+            fmt_size(done),
+            fmt_size(t)
+        ),
+        _ => format!(
+            "    {}  @ {mbps:6.2} MB/s ({mbit:6.1} Mbit/s)",
+            fmt_size(done)
+        ),
     };
     // Pad to clear any leftover characters from a longer previous line.
     print!("\r{line}      {}", if last { "\n" } else { "" });
@@ -35,7 +41,11 @@ fn part_of(dest: &Path) -> PathBuf {
 
 /// Bytes free for the caller on the volume holding `dir`; None if unknown.
 fn free_space(dir: &Path) -> Option<u64> {
-    let dir = if dir.as_os_str().is_empty() { Path::new(".") } else { dir };
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
@@ -56,7 +66,11 @@ fn free_space(dir: &Path) -> Option<u64> {
         // SAFETY: wide is NUL-terminated; the two unused out-params may be null.
         let ok = unsafe {
             windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
-                wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut())
+                wide.as_ptr(),
+                &mut free,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
         };
         if ok == 0 { None } else { Some(free) }
     }
@@ -76,8 +90,11 @@ pub fn download(url: &str, dest: &Path, sha256: Option<&str>) -> Result<()> {
 }
 
 fn download_with(
-    url: &str, dest: &Path, sha256: Option<&str>,
-    open: impl FnOnce(&str, u64) -> Result<Stream>, free: impl FnOnce(&Path) -> Option<u64>,
+    url: &str,
+    dest: &Path,
+    sha256: Option<&str>,
+    open: impl FnOnce(&str, u64) -> Result<Stream>,
+    free: impl FnOnce(&Path) -> Option<u64>,
 ) -> Result<()> {
     let part = part_of(dest);
     let mut resume_from = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
@@ -90,7 +107,11 @@ fn download_with(
     if r.status >= 400 {
         bail!("HTTP Error {}", r.status);
     }
-    let host = if r.host.is_empty() { net::host_of(url) } else { r.host.clone() };
+    let host = if r.host.is_empty() {
+        net::host_of(url)
+    } else {
+        r.host.clone()
+    };
     if r.content_type.to_lowercase().contains("html") {
         bail!("server returned an HTML page, not a file ({host})");
     }
@@ -109,17 +130,28 @@ fn download_with(
     // existing .part does not count against the space -- it is either resumed
     // or overwritten. Unknown free space lets the write decide.
     let have = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
-    if let (Some(t), Some(f)) = (total.filter(|&t| t > 0), free(part.parent().unwrap_or(Path::new("")))) {
+    if let (Some(t), Some(f)) = (
+        total.filter(|&t| t > 0),
+        free(part.parent().unwrap_or(Path::new(""))),
+    ) {
         let need = t.saturating_sub(have);
         if need > f {
-            bail!("not enough free space: {} to write, {} free", fmt_size(need), fmt_size(f));
+            bail!(
+                "not enough free space: {} to write, {} free",
+                fmt_size(need),
+                fmt_size(f)
+            );
         }
     }
 
     let start = Instant::now();
     let (mut last_t, mut last_b) = (start, done);
     {
-        let mut f = if append { OpenOptions::new().append(true).open(&part)? } else { File::create(&part)? };
+        let mut f = if append {
+            OpenOptions::new().append(true).open(&part)?
+        } else {
+            File::create(&part)?
+        };
         let mut buf = vec![0u8; 256 * 1024];
         loop {
             let n = r.reader.read(&mut buf)?;
@@ -142,7 +174,11 @@ fn download_with(
     if let Some(t) = total
         && got != t
     {
-        bail!("incomplete download: got {} of {}", fmt_size(got), fmt_size(t));
+        bail!(
+            "incomplete download: got {} of {}",
+            fmt_size(got),
+            fmt_size(t)
+        );
     }
     if let Some(want) = sha256 {
         print!("    verifying sha256 ...");
@@ -150,7 +186,11 @@ fn download_with(
         let actual = net::sha256_file(&part)?;
         if actual != want {
             let _ = fs::remove_file(&part);
-            bail!("sha256 mismatch (expected {}..., got {}...)", &want[..want.len().min(12)], &actual[..actual.len().min(12)]);
+            bail!(
+                "sha256 mismatch (expected {}..., got {}...)",
+                &want[..want.len().min(12)],
+                &actual[..actual.len().min(12)]
+            );
         }
         println!(" ok");
     }
@@ -170,7 +210,11 @@ pub fn move_with_progress(src: &Path, dst: &Path) -> Result<()> {
     }
     let total = fs::metadata(src)?.len();
     let part = part_of(dst);
-    println!("    copying {} to {}", fmt_size(total), dst.parent().unwrap_or(Path::new("")).display());
+    println!(
+        "    copying {} to {}",
+        fmt_size(total),
+        dst.parent().unwrap_or(Path::new("")).display()
+    );
     let copy = || -> Result<()> {
         let (mut fi, mut fo) = (File::open(src)?, File::create(&part)?);
         let mut buf = vec![0u8; 4 * 1024 * 1024];
@@ -189,7 +233,12 @@ pub fn move_with_progress(src: &Path, dst: &Path) -> Result<()> {
                 (last_t, last_b) = (Instant::now(), done);
             }
         }
-        progress(done, Some(total), done as f64 / start.elapsed().as_secs_f64().max(1e-6), true);
+        progress(
+            done,
+            Some(total),
+            done as f64 / start.elapsed().as_secs_f64().max(1e-6),
+            true,
+        );
         if done != total {
             bail!("incomplete copy: {} of {}", fmt_size(done), fmt_size(total));
         }
@@ -208,12 +257,19 @@ pub fn move_with_progress(src: &Path, dst: &Path) -> Result<()> {
 
 /// Download the MemTest86 zip and extract memtest86-usb.img into dest_dir.
 pub fn download_memtest(dest_dir: &Path) -> Result<()> {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let tmp = std::env::temp_dir().join(format!("memtest_{}_{nanos}", std::process::id()));
     fs::create_dir_all(&tmp)?;
     let zpath = tmp.join("memtest86-usb.zip");
-    let res = download("https://www.memtest86.com/downloads/memtest86-usb.zip", &zpath, None)
-        .and_then(|()| extract_img(&zpath, &dest_dir.join("memtest86-usb.img")));
+    let res = download(
+        "https://www.memtest86.com/downloads/memtest86-usb.zip",
+        &zpath,
+        None,
+    )
+    .and_then(|()| extract_img(&zpath, &dest_dir.join("memtest86-usb.img")));
     let _ = fs::remove_dir_all(&tmp);
     res
 }
@@ -225,9 +281,13 @@ fn extract_img(zpath: &Path, out: &Path) -> Result<()> {
     let part = part_of(out);
     let res = (|| -> Result<()> {
         let mut z = zip::ZipArchive::new(File::open(zpath)?)?;
-        let idx = (0..z.len())
-            .find(|&i| z.by_index_raw(i).is_ok_and(|f| f.name_raw().to_ascii_lowercase().ends_with(b".img")));
-        let Some(idx) = idx else { bail!("no .img in {}", zpath.display()) };
+        let idx = (0..z.len()).find(|&i| {
+            z.by_index_raw(i)
+                .is_ok_and(|f| f.name_raw().to_ascii_lowercase().ends_with(b".img"))
+        });
+        let Some(idx) = idx else {
+            bail!("no .img in {}", zpath.display())
+        };
         let mut src = z.by_index(idx)?;
         io::copy(&mut src, &mut File::create(&part)?)?;
         fs::rename(&part, out)?;
@@ -244,20 +304,39 @@ fn extract_img(zpath: &Path, out: &Path) -> Result<()> {
 /// `checked` is a check_update() result the caller already has.
 #[allow(clippy::too_many_arguments)]
 pub fn fetch_tracked(
-    dest: &Path, manifest: &mut Manifest, key: &str, label: &str, url: &str,
-    name: &str, mirrors: &[String], args: &Args, summary: &mut Summary,
+    dest: &Path,
+    manifest: &mut Manifest,
+    key: &str,
+    label: &str,
+    url: &str,
+    name: &str,
+    mirrors: &[String],
+    args: &Args,
+    summary: &mut Summary,
     checked: Option<Check>,
 ) {
     let old = manifest::entry_filename(manifest, key).map(str::to_owned);
     let Check { need, reason, meta } = if args.force {
-        Check { need: true, reason: "forced".into(), meta: None }
+        Check {
+            need: true,
+            reason: "forced".into(),
+            meta: None,
+        }
     } else {
         checked.unwrap_or_else(|| manifest::check_update(dest, manifest.get(key), url, name))
     };
     println!("==> {label:<24} {name}  [{reason}]");
     if args.dry_run {
         // Nothing is written in a dry run, manifest included.
-        summary.push((name.into(), if need { "WOULD DOWNLOAD" } else { "SKIP (up to date)" }.into()));
+        summary.push((
+            name.into(),
+            if need {
+                "WOULD DOWNLOAD"
+            } else {
+                "SKIP (up to date)"
+            }
+            .into(),
+        ));
         println!();
         return;
     }
@@ -282,7 +361,9 @@ pub fn fetch_tracked(
         let primary = url;
         let mut url = url.to_string();
         if !mirrors.is_empty() && !args.no_mirror_test {
-            let all: Vec<String> = std::iter::once(url.clone()).chain(mirrors.iter().cloned()).collect();
+            let all: Vec<String> = std::iter::once(url.clone())
+                .chain(mirrors.iter().cloned())
+                .collect();
             url = net::fastest_mirror(&all);
         }
         // The checksum comes from the primary, not from the mirror that won:
@@ -290,12 +371,19 @@ pub fn fetch_tracked(
         // tampered image proves nothing. A mirror whose own sums disagree is
         // stale or worse (Arch's /latest/ keeps one filename across releases)
         // and loses its win to the primary.
-        let expected = if args.no_verify { None } else { net::remote_sha256(primary, name) };
+        let expected = if args.no_verify {
+            None
+        } else {
+            net::remote_sha256(primary, name)
+        };
         if let Some(exp) = &expected
             && url != primary
             && net::remote_sha256(&url, name).is_some_and(|theirs| &theirs != exp)
         {
-            println!("    {} lists a different checksum (stale?) -- using the primary", net::host_of(&url));
+            println!(
+                "    {} lists a different checksum (stale?) -- using the primary",
+                net::host_of(&url)
+            );
             url = primary.to_string();
         }
         if expected.is_none() && !args.no_verify {
@@ -310,7 +398,10 @@ pub fn fetch_tracked(
                 println!("    removed old {old}");
             }
         }
-        println!("    ok  ({:.2} GB)\n", fs::metadata(&path)?.len() as f64 / (1u64 << 30) as f64);
+        println!(
+            "    ok  ({:.2} GB)\n",
+            fs::metadata(&path)?.len() as f64 / (1u64 << 30) as f64
+        );
         manifest::try_record_version(dest, manifest, key, &url, name, meta.as_ref())?;
         Ok(())
     })();
@@ -336,8 +427,12 @@ mod tests {
 
     fn stream(body: &'static [u8], status: u16, range_total: Option<u64>) -> Stream {
         Stream {
-            status, host: "example.invalid".into(), content_type: "application/x-iso".into(),
-            content_length: Some(body.len() as u64), range_total, reader: Box::new(body),
+            status,
+            host: "example.invalid".into(),
+            content_type: "application/x-iso".into(),
+            content_length: Some(body.len() as u64),
+            range_total,
+            reader: Box::new(body),
         }
     }
 
@@ -346,11 +441,16 @@ mod tests {
     #[test]
     fn memtest_extract() {
         let d = tmpdir("memtest");
-        let (good, bad, image) = (d.join("good.zip"), d.join("bad.zip"), d.join("memtest86-usb.img"));
+        let (good, bad, image) = (
+            d.join("good.zip"),
+            d.join("bad.zip"),
+            d.join("memtest86-usb.img"),
+        );
         let payload = b"new image".repeat(4096);
         {
             let mut z = zip::ZipWriter::new(File::create(&good).unwrap());
-            let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
             z.start_file("ReadMe.txt", opts).unwrap();
             z.write_all(b"x").unwrap();
             z.start_file("memtest86-usb.img", opts).unwrap();
@@ -365,8 +465,15 @@ mod tests {
 
         extract_img(&good, &image).unwrap();
         assert_eq!(fs::read(&image).unwrap(), payload);
-        assert!(extract_img(&bad, &image).is_err(), "a zip with a wrong CRC was accepted");
-        assert_eq!(fs::read(&image).unwrap(), payload, "a broken zip replaced the good image");
+        assert!(
+            extract_img(&bad, &image).is_err(),
+            "a zip with a wrong CRC was accepted"
+        );
+        assert_eq!(
+            fs::read(&image).unwrap(),
+            payload,
+            "a broken zip replaced the good image"
+        );
         assert!(!part_of(&image).exists(), ".part left on the stick");
         fs::remove_dir_all(d).unwrap();
     }
@@ -374,37 +481,75 @@ mod tests {
     /// download() refuses what cannot fit, before it writes anything, and counts
     /// a .part being resumed as space already taken care of.
     #[test]
-    #[ignore = "needs net::fmt_size (stub until net.rs is ported)"]
     fn free_space_and_resume() {
         let d = tmpdir("free");
         let dest = d.join("x.iso");
         fs::write(&dest, b"old").unwrap();
-        let err = download_with("u", &dest, None, |_, _| Ok(stream(b"0123456789", 200, None)), |_| Some(9))
-            .unwrap_err();
+        let err = download_with(
+            "u",
+            &dest,
+            None,
+            |_, _| Ok(stream(b"0123456789", 200, None)),
+            |_| Some(9),
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("free space"), "wrong error: {err}");
-        assert!(!part_of(&dest).exists(), "a .part was created although nothing fits");
+        assert!(
+            !part_of(&dest).exists(),
+            "a .part was created although nothing fits"
+        );
         assert_eq!(fs::read(&dest).unwrap(), b"old");
 
         // 6 of 10 bytes are already in the .part: 4 to go, 5 free -> fits.
         fs::write(part_of(&dest), b"012345").unwrap();
-        download_with("u", &dest, None, |_, off| {
-            assert_eq!(off, 6);
-            Ok(Stream { content_length: Some(4), ..stream(b"6789", 206, Some(10)) })
-        }, |_| Some(5)).unwrap();
+        download_with(
+            "u",
+            &dest,
+            None,
+            |_, off| {
+                assert_eq!(off, 6);
+                Ok(Stream {
+                    content_length: Some(4),
+                    ..stream(b"6789", 206, Some(10))
+                })
+            },
+            |_| Some(5),
+        )
+        .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"0123456789");
 
         // A 200 to a range request restarts from scratch; 416 means already complete.
         fs::write(part_of(&dest), b"junk").unwrap();
-        download_with("u", &dest, None, |_, _| Ok(stream(b"abc", 200, None)), |_| None).unwrap();
+        download_with(
+            "u",
+            &dest,
+            None,
+            |_, _| Ok(stream(b"abc", 200, None)),
+            |_| None,
+        )
+        .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"abc");
         fs::write(part_of(&dest), b"done").unwrap();
-        download_with("u", &dest, None, |_, _| Ok(stream(b"", 416, None)), |_| None).unwrap();
+        download_with(
+            "u",
+            &dest,
+            None,
+            |_, _| Ok(stream(b"", 416, None)),
+            |_| None,
+        )
+        .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"done");
 
         // HTML error pages and wrong sizes never reach the final name.
-        let html = Stream { content_type: "text/html".into(), ..stream(b"<html>", 200, None) };
+        let html = Stream {
+            content_type: "text/html".into(),
+            ..stream(b"<html>", 200, None)
+        };
         assert!(download_with("u", &dest, None, |_, _| Ok(html), |_| None).is_err());
-        let short = Stream { content_length: Some(99), ..stream(b"abc", 200, None) };
+        let short = Stream {
+            content_length: Some(99),
+            ..stream(b"abc", 200, None)
+        };
         assert!(download_with("u", &dest, None, |_, _| Ok(short), |_| None).is_err());
         assert_eq!(fs::read(&dest).unwrap(), b"done");
         fs::remove_dir_all(d).unwrap();

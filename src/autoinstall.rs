@@ -12,10 +12,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::app::Args;
-use crate::catalog::{catalog, Kind};
+use crate::catalog::{Kind, catalog};
 use crate::manifest::Manifest;
 
 const TEMPLATE_ROOT: &str = "template";
@@ -26,8 +26,11 @@ const TEMPLATE_ROOT: &str = "template";
 /// and missed on Linux. Match without regard to case and hand back the real
 /// spelling, so the path written into ventoy.json is one that exists.
 fn real_dirname(parent: &Path, wanted: &str) -> Option<String> {
-    let entries: Vec<String> = fs::read_dir(parent).ok()?.flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let entries: Vec<String> = fs::read_dir(parent)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
     if entries.iter().any(|n| n == wanted) {
         return Some(wanted.to_string());
     }
@@ -45,8 +48,11 @@ fn template_dir(dest: &Path, folder: &str) -> (String, PathBuf) {
 /// Stick-absolute paths of the .xml templates in /template/<folder>.
 fn stick_templates(dest: &Path, folder: &str) -> Vec<String> {
     let (stick, local) = template_dir(dest, folder);
-    let Ok(rd) = fs::read_dir(&local) else { return vec![] };
-    let mut names: Vec<String> = rd.flatten()
+    let Ok(rd) = fs::read_dir(&local) else {
+        return vec![];
+    };
+    let mut names: Vec<String> = rd
+        .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.to_lowercase().ends_with(".xml"))
         .collect();
@@ -56,11 +62,20 @@ fn stick_templates(dest: &Path, folder: &str) -> Vec<String> {
 
 /// [(folder, image_name)] of the Windows images actually present.
 /// `wins`: (catalog key, win) of every Windows catalog item, in catalog order.
-fn windows_on_stick(dest: &Path, manifest: &Manifest, wins: &[(&str, &str)]) -> Vec<(String, String)> {
+fn windows_on_stick(
+    dest: &Path,
+    manifest: &Manifest,
+    wins: &[(&str, &str)],
+) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
     for (key, win) in wins {
-        let name = manifest.get(*key).and_then(|e| e.get("filename")).and_then(Value::as_str);
-        let Some(name) = name.filter(|n| !n.is_empty()) else { continue };
+        let name = manifest
+            .get(*key)
+            .and_then(|e| e.get("filename"))
+            .and_then(Value::as_str);
+        let Some(name) = name.filter(|n| !n.is_empty()) else {
+            continue;
+        };
         if found.iter().any(|(_, n)| n == name) || !dest.join(name).exists() {
             continue; // already listed, or recorded but not actually here
         }
@@ -76,7 +91,11 @@ fn windows_on_stick(dest: &Path, manifest: &Manifest, wins: &[(&str, &str)]) -> 
 /// the folders that exist but are still empty, so the caller can say so.
 fn ensure_template_dirs(dest: &Path, found: &[(String, String)], create: bool) -> Vec<String> {
     let mut empty = Vec::new();
-    for folder in found.iter().map(|(f, _)| f.as_str()).collect::<BTreeSet<_>>() {
+    for folder in found
+        .iter()
+        .map(|(f, _)| f.as_str())
+        .collect::<BTreeSet<_>>()
+    {
         let (stick, local) = template_dir(dest, folder);
         if create && !local.is_dir() && fs::create_dir_all(&local).is_err() {
             continue;
@@ -90,10 +109,14 @@ fn ensure_template_dirs(dest: &Path, found: &[(String, String)], create: bool) -
 
 /// The auto_install entries the Windows ISOs on the stick should have.
 fn build_auto_install(dest: &Path, found: &[(String, String)]) -> Vec<Value> {
-    found.iter().filter_map(|(folder, name)| {
-        let templates = stick_templates(dest, folder);
-        (!templates.is_empty()).then(|| json!({"image": format!("/{name}"), "template": templates}))
-    }).collect()
+    found
+        .iter()
+        .filter_map(|(folder, name)| {
+            let templates = stick_templates(dest, folder);
+            (!templates.is_empty())
+                .then(|| json!({"image": format!("/{name}"), "template": templates}))
+        })
+        .collect()
 }
 
 /// Whether an auto_install entry came from here.
@@ -102,12 +125,17 @@ fn build_auto_install(dest: &Path, found: &[(String, String)]) -> Vec<Value> {
 /// left from a previous build names an ISO that no longer exists, and matching
 /// on current names would keep exactly the stale entries this should clear.
 fn is_managed(entry: &Value) -> bool {
-    let Some(Value::Array(templates)) = entry.get("template") else { return false };
+    let Some(Value::Array(templates)) = entry.get("template") else {
+        return false;
+    };
     // Lowercased like the folder lookup: the stick is case-insensitive, so
     // /Template/Win11 is ours just as much as /template/win11.
     let prefix = format!("/{TEMPLATE_ROOT}/win");
     !templates.is_empty()
-        && templates.iter().all(|t| t.as_str().is_some_and(|s| s.to_lowercase().starts_with(&prefix)))
+        && templates.iter().all(|t| {
+            t.as_str()
+                .is_some_and(|s| s.to_lowercase().starts_with(&prefix))
+        })
 }
 
 /// Rewrite ventoy.json's auto_install to match the templates on the stick.
@@ -115,8 +143,12 @@ fn is_managed(entry: &Value) -> bool {
 /// Only entries this program owns are touched; hand-written ones for other
 /// images are carried over, and the rest of ventoy.json is preserved.
 pub fn sync_auto_install(dest: &Path, manifest: &Manifest, args: &Args) {
-    let wins: Vec<(&str, &str)> = catalog().iter()
-        .filter_map(|it| match &it.kind { Kind::Windows(p) => Some((it.key, p.win)), _ => None })
+    let wins: Vec<(&str, &str)> = catalog()
+        .iter()
+        .filter_map(|it| match &it.kind {
+            Kind::Windows(p) => Some((it.key, p.win)),
+            _ => None,
+        })
         .collect();
     sync(dest, manifest, args.dry_run, &wins);
 }
@@ -143,7 +175,10 @@ fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) 
     let found = windows_on_stick(dest, manifest, wins);
     let empty = ensure_template_dirs(dest, &found, !dry_run);
 
-    let existing = match config.get("auto_install") { Some(Value::Array(a)) => a.clone(), _ => vec![] };
+    let existing = match config.get("auto_install") {
+        Some(Value::Array(a)) => a.clone(),
+        _ => vec![],
+    };
     let (before, foreign): (Vec<Value>, Vec<Value>) = existing.into_iter().partition(is_managed);
     let wanted = build_auto_install(dest, &found);
 
@@ -151,8 +186,10 @@ fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) 
         // Nothing to rewrite, but an empty folder is still worth one line --
         // it is the only sign that answer files can go there at all.
         if !empty.is_empty() {
-            println!("\nNo unattended template in {} yet -- put an .xml there and\nit gets attached to the matching Windows images.",
-                     empty.join(" or "));
+            println!(
+                "\nNo unattended template in {} yet -- put an .xml there and\nit gets attached to the matching Windows images.",
+                empty.join(" or ")
+            );
         }
         return;
     }
@@ -160,11 +197,20 @@ fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) 
         return;
     }
 
-    let image = |e: &Value| e.get("image").and_then(Value::as_str).unwrap_or("None").to_string();
+    let image = |e: &Value| {
+        e.get("image")
+            .and_then(Value::as_str)
+            .unwrap_or("None")
+            .to_string()
+    };
     println!("\n{0} AUTO-INSTALL TEMPLATES {0}", "-".repeat(12));
     for entry in &wanted {
         let was = before.iter().find(|e| e.get("image") == entry.get("image"));
-        let mark = match was { Some(w) if w == entry => "unchanged", Some(_) => "updated", None => "added" };
+        let mark = match was {
+            Some(w) if w == entry => "unchanged",
+            Some(_) => "updated",
+            None => "added",
+        };
         println!("  {:<9} {}", mark, image(entry));
         for template in entry["template"].as_array().into_iter().flatten() {
             println!("            {}", template.as_str().unwrap_or_default());
@@ -187,7 +233,10 @@ fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) 
     if wanted.is_empty() && foreign.is_empty() {
         config.shift_remove("auto_install");
     } else {
-        config.insert("auto_install".into(), Value::Array(foreign.into_iter().chain(wanted).collect()));
+        config.insert(
+            "auto_install".into(),
+            Value::Array(foreign.into_iter().chain(wanted).collect()),
+        );
     }
 
     let mut tmp = path.clone().into_os_string();
@@ -198,10 +247,13 @@ fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) 
         // by 2. JSON strings never hold a raw newline, so leading spaces are pure
         // indentation: doubling them gives Python's layout.
         let nl = if cfg!(windows) { "\r\n" } else { "\n" };
-        let text: String = serde_json::to_string_pretty(&*config)?.lines().map(|l| {
-            let indent = l.len() - l.trim_start_matches(' ').len();
-            format!("{}{l}{nl}", " ".repeat(indent))
-        }).collect();
+        let text: String = serde_json::to_string_pretty(&*config)?
+            .lines()
+            .map(|l| {
+                let indent = l.len() - l.trim_start_matches(' ').len();
+                format!("{}{l}{nl}", " ".repeat(indent))
+            })
+            .collect();
         fs::write(&tmp, text)?;
         fs::rename(&tmp, &path)
     };
@@ -215,7 +267,12 @@ fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) 
 mod tests {
     use super::*;
 
-    const WINS: &[(&str, &str)] = &[("win11_de", "11"), ("win11_en", "11"), ("win10_en", "10"), ("win10_de", "10")];
+    const WINS: &[(&str, &str)] = &[
+        ("win11_de", "11"),
+        ("win11_en", "11"),
+        ("win10_en", "10"),
+        ("win10_de", "10"),
+    ];
 
     fn stick(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("ventoy_ai_{tag}_{}", std::process::id()));
@@ -225,7 +282,10 @@ mod tests {
     }
 
     fn manifest(pairs: &[(&str, &str)]) -> Manifest {
-        pairs.iter().map(|(k, f)| (k.to_string(), json!({"filename": f}))).collect()
+        pairs
+            .iter()
+            .map(|(k, f)| (k.to_string(), json!({"filename": f})))
+            .collect()
     }
 
     fn read_json(root: &Path) -> Value {
@@ -245,12 +305,12 @@ mod tests {
             fs::write(root.join(current), "").unwrap();
             fs::write(root.join("debian.iso"), "").unwrap();
             let original = json!({
-                "theme": {"file": "/theme/x.txt"},
-                "auto_install": [
-                    {"image": "/Win_11_25H2_English_00000.0000.iso",
-                     "template": [format!("/{root_name}/{sub_name}/a.xml")]},
-                    {"image": "/debian.iso", "template": ["/mine/preseed.cfg"]},
-                ]});
+            "theme": {"file": "/theme/x.txt"},
+            "auto_install": [
+                {"image": "/Win_11_25H2_English_00000.0000.iso",
+                 "template": [format!("/{root_name}/{sub_name}/a.xml")]},
+                {"image": "/debian.iso", "template": ["/mine/preseed.cfg"]},
+            ]});
             fs::write(root.join("ventoy/ventoy.json"), original.to_string()).unwrap();
 
             sync(&root, &manifest(&[("win11_en", current)]), false, WINS);
@@ -259,12 +319,21 @@ mod tests {
             let config = read_json(&root);
             fs::remove_dir_all(&root).unwrap();
             let entries = config["auto_install"].as_array().unwrap();
-            let images: Vec<&str> = entries.iter().map(|e| e["image"].as_str().unwrap()).collect();
+            let images: Vec<&str> = entries
+                .iter()
+                .map(|e| e["image"].as_str().unwrap())
+                .collect();
             assert_eq!(images, ["/debian.iso", &format!("/{current}")]);
-            assert_eq!(entries[1]["template"], json!([format!("/{root_name}/{sub_name}/a.xml")]));
+            assert_eq!(
+                entries[1]["template"],
+                json!([format!("/{root_name}/{sub_name}/a.xml")])
+            );
             assert_eq!(config["theme"], json!({"file": "/theme/x.txt"}));
             // Key order kept, 4-space indent like Python's json.dump(indent=4).
-            assert!(raw.starts_with("{\n    \"theme\": {\n        \"file\""), "{raw}");
+            assert!(
+                raw.starts_with("{\n    \"theme\": {\n        \"file\""),
+                "{raw}"
+            );
         }
     }
 
@@ -282,10 +351,15 @@ mod tests {
                 fs::write(root.join("Win_11.iso"), "").unwrap();
             }
             sync(&root, &m, dry_run, WINS);
-            let mut dirs: Vec<String> = fs::read_dir(root.join("template")).into_iter().flatten().flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            let mut dirs: Vec<String> = fs::read_dir(root.join("template"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
             dirs.sort();
-            let untouched = fs::read_to_string(root.join("ventoy/ventoy.json")).unwrap() == original;
+            let untouched =
+                fs::read_to_string(root.join("ventoy/ventoy.json")).unwrap() == original;
             fs::remove_dir_all(&root).unwrap();
             (dirs, untouched)
         };
@@ -296,8 +370,12 @@ mod tests {
 
     #[test]
     fn managed_entries() {
-        assert!(is_managed(&json!({"image": "/x.iso", "template": ["/Template/WIN11/a.xml"]})));
-        assert!(!is_managed(&json!({"image": "/x.iso", "template": ["/template/win11/a.xml", "/mine/b.xml"]})));
+        assert!(is_managed(
+            &json!({"image": "/x.iso", "template": ["/Template/WIN11/a.xml"]})
+        ));
+        assert!(!is_managed(
+            &json!({"image": "/x.iso", "template": ["/template/win11/a.xml", "/mine/b.xml"]})
+        ));
         assert!(!is_managed(&json!({"image": "/x.iso", "template": []})));
         assert!(!is_managed(&json!("/template/win11/a.xml")));
     }
