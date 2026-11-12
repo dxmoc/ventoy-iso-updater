@@ -9,6 +9,7 @@ repository = "https://github.com/dxmoc/ventoy-iso-updater"
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2.191"
 regex = "1.13.1"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
