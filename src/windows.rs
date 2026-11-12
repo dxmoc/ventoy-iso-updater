@@ -456,6 +456,8 @@ fn uup_build_iso(
 ) -> Result<(PathBuf, String, String)> {
     let (uuid, build) = uup_latest_uuid(win, rel)?;
     let save_name = fill(tmpl, &build);
+    // `build` comes from the UUP API and also names the scratch dir that gets cleared.
+    crate::download::check_name(&save_name)?;
     println!(
         "    build {}  (uuid {})",
         build,
@@ -523,6 +525,7 @@ fn uup_build_iso(
     }
     fs::create_dir_all(&bdir)?;
     fs::write(&lock, std::process::id().to_string())?;
+    let _temp = crate::download::Temp::new(&lock);
     zip::ZipArchive::new(Cursor::new(pkg))?.extract(&bdir)?;
 
     // The bundled get_aria2.ps1 downloads aria2c.exe and verifies it with

@@ -83,12 +83,13 @@ pub fn run() -> i32 {
     let args = Args::parse();
     // Ctrl+C during the Windows download watch only ends the watch; anywhere
     // else it stops queued lookups and exits. Partial downloads stay as .part
-    // and resume next run.
+    // and resume next run; copies, extracts and build locks are removed.
     let _ = ctrlc::set_handler(|| {
         if windows::WATCHING.load(Ordering::SeqCst) {
             windows::STOP_WATCH.store(true, Ordering::SeqCst);
         } else {
             net::abort();
+            download::remove_temps();
             println!("\nAborted.");
             std::process::exit(1);
         }

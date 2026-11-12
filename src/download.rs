@@ -4,6 +4,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
@@ -31,6 +32,41 @@ fn progress(done: u64, total: Option<u64>, bps: f64, last: bool) {
     // Pad to clear any leftover characters from a longer previous line.
     print!("\r{line}      {}", if last { "\n" } else { "" });
     let _ = io::stdout().flush();
+}
+
+/// A filename from upstream (listing, API, URL) must stay one plain entry in
+/// the target folder: "a/../../x.iso" or "C:x.iso" would write elsewhere.
+pub fn check_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', ':', '\0']) {
+        bail!("unsafe filename from upstream: {name:?}");
+    }
+    Ok(())
+}
+
+/// Temp files a Ctrl+C must not leave behind; app's handler removes them.
+static TEMPS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Registers a temp file or dir for removal on Ctrl+C until dropped.
+pub struct Temp(PathBuf);
+
+impl Temp {
+    pub fn new(path: &Path) -> Self {
+        TEMPS.lock().unwrap().push(path.to_path_buf());
+        Temp(path.to_path_buf())
+    }
+}
+
+impl Drop for Temp {
+    fn drop(&mut self) {
+        TEMPS.lock().unwrap().retain(|p| *p != self.0);
+    }
+}
+
+/// Ctrl+C: delete every registered temp path.
+pub fn remove_temps() {
+    for p in TEMPS.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+        let _ = fs::remove_file(&p).or_else(|_| fs::remove_dir_all(&p));
+    }
 }
 
 fn part_of(dest: &Path) -> PathBuf {
@@ -93,16 +129,22 @@ fn download_with(
     url: &str,
     dest: &Path,
     sha256: Option<&str>,
-    open: impl FnOnce(&str, u64) -> Result<Stream>,
+    open: impl Fn(&str, u64) -> Result<Stream>,
     free: impl FnOnce(&Path) -> Option<u64>,
 ) -> Result<()> {
     let part = part_of(dest);
     let mut resume_from = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
     let mut r = open(url, resume_from)?;
     if r.status == 416 && resume_from > 0 {
-        fs::rename(&part, dest)?;
-        println!("    already complete");
-        return Ok(());
+        if r.range_total == Some(resume_from) {
+            println!("    already complete");
+            return finish(&part, dest, sha256, Some(resume_from));
+        }
+        // Longer than the file now is: left over from another build of a
+        // file that keeps its name (Arch /latest/, HBCD). Start over.
+        println!("    partial download is from another build -- starting over");
+        resume_from = 0;
+        r = open(url, 0)?;
     }
     if r.status >= 400 {
         bail!("HTTP Error {}", r.status);
@@ -169,8 +211,12 @@ fn download_with(
     }
     let elapsed = start.elapsed().as_secs_f64().max(1e-6);
     progress(done, total, (done - resume_from) as f64 / elapsed, true);
+    finish(&part, dest, sha256, total)
+}
 
-    let got = fs::metadata(&part)?.len();
+/// Size and SHA-256 check of a finished .part, then the rename onto `dest`.
+fn finish(part: &Path, dest: &Path, sha256: Option<&str>, total: Option<u64>) -> Result<()> {
+    let got = fs::metadata(part)?.len();
     if let Some(t) = total
         && got != t
     {
@@ -183,9 +229,9 @@ fn download_with(
     if let Some(want) = sha256 {
         print!("    verifying sha256 ...");
         let _ = io::stdout().flush();
-        let actual = net::sha256_file(&part)?;
+        let actual = net::sha256_file(part)?;
         if actual != want {
-            let _ = fs::remove_file(&part);
+            let _ = fs::remove_file(part);
             bail!(
                 "sha256 mismatch (expected {}..., got {}...)",
                 &want[..want.len().min(12)],
@@ -194,7 +240,7 @@ fn download_with(
         }
         println!(" ok");
     }
-    fs::rename(&part, dest)?;
+    fs::rename(part, dest)?;
     Ok(())
 }
 
@@ -210,6 +256,7 @@ pub fn move_with_progress(src: &Path, dst: &Path) -> Result<()> {
     }
     let total = fs::metadata(src)?.len();
     let part = part_of(dst);
+    let _temp = Temp::new(&part);
     println!(
         "    copying {} to {}",
         fmt_size(total),
@@ -263,6 +310,7 @@ pub fn download_memtest(dest_dir: &Path) -> Result<()> {
         .unwrap_or(0);
     let tmp = std::env::temp_dir().join(format!("memtest_{}_{nanos}", std::process::id()));
     fs::create_dir_all(&tmp)?;
+    let _temp = Temp::new(&tmp);
     let zpath = tmp.join("memtest86-usb.zip");
     let res = download(
         "https://www.memtest86.com/downloads/memtest86-usb.zip",
@@ -279,6 +327,7 @@ pub fn download_memtest(dest_dir: &Path) -> Result<()> {
 /// (or one failing the CRC check) from ever carrying the final name.
 fn extract_img(zpath: &Path, out: &Path) -> Result<()> {
     let part = part_of(out);
+    let _temp = Temp::new(&part);
     let res = (|| -> Result<()> {
         let mut z = zip::ZipArchive::new(File::open(zpath)?)?;
         let idx = (0..z.len()).find(|&i| {
@@ -315,6 +364,11 @@ pub fn fetch_tracked(
     summary: &mut Summary,
     checked: Option<Check>,
 ) {
+    if let Err(e) = check_name(name) {
+        println!("==> {label:<24} FAILED: {e}\n");
+        summary.push((name.into(), format!("FAIL: {e}")));
+        return;
+    }
     let old = manifest::entry_filename(manifest, key).map(str::to_owned);
     let Check { need, reason, meta } = if args.force {
         Check {
@@ -390,6 +444,12 @@ pub fn fetch_tracked(
             println!("    no published checksum -- size check only");
         }
         let path = dest.join(name);
+        if old.as_deref() == Some(name) {
+            // Changed upstream under the same name: a .part is from the old build.
+            // shortcut: a .part from an unrecorded first attempt still resumes; the
+            // sha256 check catches a mix where sums are published.
+            let _ = fs::remove_file(part_of(&path));
+        }
         download(&url, &path, expected.as_deref())?;
         if let Some(old) = old.as_deref().filter(|&o| o != name) {
             let old_path = dest.join(old);
@@ -417,6 +477,7 @@ pub fn fetch_tracked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
 
     fn tmpdir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("vi_download_{tag}_{}", std::process::id()));
@@ -534,25 +595,98 @@ mod tests {
             "u",
             &dest,
             None,
-            |_, _| Ok(stream(b"", 416, None)),
+            |_, _| Ok(stream(b"", 416, Some(4))),
             |_| None,
         )
         .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"done");
 
         // HTML error pages and wrong sizes never reach the final name.
-        let html = Stream {
-            content_type: "text/html".into(),
-            ..stream(b"<html>", 200, None)
+        let html = |_: &str, _| {
+            Ok(Stream {
+                content_type: "text/html".into(),
+                ..stream(b"<html>", 200, None)
+            })
         };
-        assert!(download_with("u", &dest, None, |_, _| Ok(html), |_| None).is_err());
-        let short = Stream {
-            content_length: Some(99),
-            ..stream(b"abc", 200, None)
+        assert!(download_with("u", &dest, None, html, |_| None).is_err());
+        let short = |_: &str, _| {
+            Ok(Stream {
+                content_length: Some(99),
+                ..stream(b"abc", 200, None)
+            })
         };
-        assert!(download_with("u", &dest, None, |_, _| Ok(short), |_| None).is_err());
+        assert!(download_with("u", &dest, None, short, |_| None).is_err());
         assert_eq!(fs::read(&dest).unwrap(), b"done");
         fs::remove_dir_all(d).unwrap();
+    }
+
+    /// A .part longer than the file now is (another build under the same name)
+    /// restarts from scratch; a complete one still has to pass the sha256 check.
+    #[test]
+    fn stale_part_is_not_trusted() {
+        let d = tmpdir("stale");
+        let dest = d.join("archlinux-x86_64.iso");
+        fs::write(&dest, b"good old image").unwrap();
+        fs::write(part_of(&dest), b"stale bytes of last month's build").unwrap();
+        let open = |_: &str, off: u64| {
+            Ok(if off > 0 {
+                stream(b"", 416, Some(10))
+            } else {
+                stream(b"0123456789", 200, None)
+            })
+        };
+        download_with("u", &dest, None, open, |_| None).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"0123456789");
+
+        fs::write(part_of(&dest), b"0123456789").unwrap();
+        let wrong = "00".repeat(32);
+        let open = |_: &str, _| Ok(stream(b"", 416, Some(10)));
+        assert!(download_with("u", &dest, Some(&wrong), open, |_| None).is_err());
+        assert!(!part_of(&dest).exists(), "a .part failing sha256 was kept");
+        assert_eq!(fs::read(&dest).unwrap(), b"0123456789");
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn upstream_names_stay_in_dest() {
+        for bad in ["a/../../x.iso", r"a\..\x.iso", "C:x.iso", "..", ""] {
+            assert!(check_name(bad).is_err(), "{bad:?} accepted");
+        }
+        check_name("ubuntu-26.04.1-desktop-amd64.iso").unwrap();
+
+        // fetch_tracked refuses before touching anything (no manifest, no .part removal).
+        let d = tmpdir("traversal");
+        let args = Args::parse_from(["x"]);
+        let (mut m, mut summary) = (Manifest::new(), Vec::new());
+        let up_to_date = Check {
+            need: false,
+            reason: "up to date".into(),
+            meta: None,
+        };
+        fetch_tracked(
+            &d,
+            &mut m,
+            "k",
+            "K",
+            "u",
+            "../evil.iso",
+            &[],
+            &args,
+            &mut summary,
+            Some(up_to_date),
+        );
+        assert!(summary[0].1.starts_with("FAIL"), "{summary:?}");
+        assert!(m.is_empty() && !d.join(crate::MANIFEST_NAME).exists());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn temps_unregister_on_drop() {
+        let p = PathBuf::from("/nonexistent/vi-temp-probe");
+        let t = Temp::new(&p);
+        assert!(TEMPS.lock().unwrap().contains(&p));
+        drop(t);
+        assert!(!TEMPS.lock().unwrap().contains(&p));
     }
 
     #[test]
