@@ -444,12 +444,12 @@ pub fn fetch_tracked(
             println!("    no published checksum -- size check only");
         }
         let path = dest.join(name);
-        if old.as_deref() == Some(name) {
-            // Changed upstream under the same name: a .part is from the old build.
-            // shortcut: a .part from an unrecorded first attempt still resumes; the
-            // sha256 check catches a mix where sums are published.
-            let _ = fs::remove_file(part_of(&path));
-        }
+        // A .part always resumes: for a fixed-name image it is almost always an
+        // interrupted attempt at this very build, and throwing it away would
+        // restart multi-GB downloads on every rerun.
+        // shortcut: a .part from a build that was itself replaced before the
+        // resume is not detected unless sums are published (size alone matches);
+        // store the remote size/mtime next to the .part if that ever bites.
         download(&url, &path, expected.as_deref())?;
         if let Some(old) = old.as_deref().filter(|&o| o != name) {
             let old_path = dest.join(old);
