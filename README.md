@@ -1,8 +1,8 @@
-# update_ventoy_isos
+# ventoy-iso-updater
 
-Keeps the ISOs on a [Ventoy](https://www.ventoy.net/) stick up to date. One
-script, no dependencies beyond the Python standard library, runs on Windows,
-Linux and macOS.
+Keeps the ISOs on a [Ventoy](https://www.ventoy.net/) stick up to date. A
+single self-contained binary for Windows, Linux and macOS -- nothing to
+install, no runtime.
 
 Windows and Linux are verified against a real stick. macOS runs in CI on every
 change, but no one has yet pointed it at actual hardware -- the parts that can
@@ -14,22 +14,49 @@ listings, SourceForge RSS, the GitHub API, the NixOS channel bucket,
 massgrave.dev), downloads only what actually changed, and cleans up the
 versions it replaced.
 
+## Install
+
+Download the binary for your system from the
+[latest release](https://github.com/dxmoc/ventoy-iso-updater/releases/latest):
+
+| System | File |
+| --- | --- |
+| Windows (x64) | `ventoy-iso-updater-windows-x86_64.exe` |
+| Linux (x64 / ARM64) | `ventoy-iso-updater-linux-x86_64` / `-linux-arm64` (static, any distro) |
+| macOS (Apple silicon / Intel) | `ventoy-iso-updater-macos-arm64` / `-macos-x86_64` |
+
+On Linux and macOS make it executable first (`chmod +x ventoy-iso-updater-*`).
+macOS blocks unsigned downloads on the first start; clear that with
+`xattr -d com.apple.quarantine ventoy-iso-updater-macos-*`. `SHA256SUMS` in
+the release lists the checksums.
+
+Or build it yourself with a Rust toolchain:
+`cargo install --git https://github.com/dxmoc/ventoy-iso-updater`.
+With Nix: `nix run github:dxmoc/ventoy-iso-updater`.
+
+Upgrading from the old Python script (`update_ventoy_isos.py`, up to v0.10.0):
+just swap the file. The binary reads the same `ventoy_versions.json` on the
+stick and keeps every record and template assignment.
+
 ## Usage
 
 ```sh
-python update_ventoy_isos.py                 # interactive: pick drive, then ISOs
-python update_ventoy_isos.py --dest E:\      # explicit target
-python update_ventoy_isos.py --dry-run       # report only, write nothing
-python update_ventoy_isos.py --force         # ignore the manifest, redownload
+ventoy-iso-updater                 # interactive: pick drive, then ISOs
+ventoy-iso-updater --dest E:\      # explicit target
+ventoy-iso-updater --dry-run       # report only, write nothing
+ventoy-iso-updater --force         # ignore the manifest, redownload
 ```
 
-Without `--dest` the script lists the removable drives it found and lets you
+On Windows, double-clicking the `.exe` works too; it starts the interactive
+picker.
+
+Without `--dest` the program lists the removable drives it found and lets you
 choose one, so there is no drive letter to type. Detection uses the Win32 drive
 type on Windows, the removable flag under `/sys` on Linux, and `/Volumes` on
 macOS.
 
 It also works under WSL, where the stick is a drvfs mount with no block device
-behind it: there the script asks Windows which drive is removable. If that WSL
+behind it: there the program asks Windows which drive is removable. If that WSL
 setup has `.exe` interop disabled -- common on Arch images booting systemd,
 where `systemd-binfmt` drops the `WSLInterop` registration -- it falls back to
 the drvfs mounts under `/mnt/`, leaving out the system drive, and labels them
@@ -83,12 +110,12 @@ primary; a mirror whose own checksum disagrees is dropped. An image that
 would not fit in the free space is refused before the download starts, instead
 of filling the stick and failing at the end.
 
-**Update notice:** at startup the script asks the GitHub API whether a newer
+**Update notice:** at startup the program asks the GitHub API whether a newer
 release of itself is out and prints a link if so. It downloads and changes
 nothing; offline it stays silent. `--no-update-check` skips the request.
 
 **Windows ISOs** are in no preset, because none of the three ways to get them
-runs unattended. Pick them and the script asks which method to use, spelling out
+runs unattended. Pick them and the program asks which method to use, spelling out
 what each one costs; pass `--windows` to skip that prompt. Windows 11, 10 and
 **Windows Server 2022 / 2025** are all offered here. Server is browser-only on
 massgrave, so those always take the `massgrave` hand-off even under `--windows
@@ -144,32 +171,32 @@ are treated as hand-written and left alone, as is the rest of the file.
 
 ## Requirements
 
-Python 3.6+. Nothing else -- standard library only.
+None for the release binaries. Building needs Rust 1.88 or newer.
 
 ## Development
 
 Two checks, for the two ways this breaks.
 
 The catalog resolves download URLs from ~50 foreign directory listings, so the
-usual failure is an upstream reorganizing its mirror. `check_resolvers` asks
+usual failure is an upstream reorganizing its mirror. The resolver test asks
 every upstream whether its resolver still finds an ISO:
 
 ```sh
-python tests/check_resolvers.py
+cargo test --test resolvers -- --ignored --nocapture
 ```
 
 The other failure is a platform difference. Drive detection takes a different
 route per system -- Win32 API, the removable flag under `/sys`, drvfs under
 WSL, `/Volumes` on macOS -- and the `ventoy.json` rewriting has to survive a
-case-insensitive filesystem. `check_platform` covers both, offline, and runs on
+case-insensitive filesystem. The unit tests cover both, offline, and runs on
 Linux, Windows and macOS in CI -- together with the offline checks of the
 download path (parallel detection, free-space check, MemTest86 unpacking):
 
 ```sh
-python tests/check_platform.py
+cargo test
 ```
 
-It also pins one invariant that already bit once: openSUSE Leap must resolve to
+The resolver test also pins one invariant that already bit once: openSUSE Leap must resolve to
 the newest release on the mirror. Leap 16 moved its installer to a new path and
 filename, the resolver stopped matching, and instead of failing it quietly kept
 serving end-of-life 15.6 -- so "the resolver returned something" is not enough
