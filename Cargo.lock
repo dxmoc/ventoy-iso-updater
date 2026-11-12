@@ -687,6 +687,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "regex",
  "serde_json",
  "sha2",
