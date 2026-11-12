@@ -165,7 +165,14 @@ fn run_with(mut args: Args) -> i32 {
     if args.preset.is_none() {
         let already: HashSet<&str> = selection.iter().map(|it| it.key).collect();
         let win = ui::choose_windows(&already, &mut args);
-        selection.extend(win);
+        if !win.is_empty() {
+            selection.extend(win);
+            // Windows images are 5-8 GB each, so check again with them in.
+            if !ui::fits_or_confirmed(&selection, &dest, &manifest, true) {
+                selection.retain(|it| !matches!(it.kind, Kind::Windows(_)));
+                println!("Windows ISOs left out.");
+            }
+        }
     }
     let method = *args.windows.get_or_insert(WinMethod::Massgrave);
     let iso_items: Vec<_> = selection

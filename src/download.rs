@@ -367,6 +367,38 @@ fn extract_img(zpath: &Path, out: &Path) -> Result<()> {
     res
 }
 
+/// When the stick has no room for the new version next to the old one, the
+/// old one goes first: ISOs can be fetched again, and a stick filled to the
+/// brim would otherwise never update. A same-name update counts too, since the
+/// .part grows next to the file it replaces.
+fn make_room_for_update(
+    dest: &Path,
+    old: Option<&str>,
+    path: &Path,
+    remote: Option<u64>,
+    free: Option<u64>,
+) -> Result<()> {
+    let (Some(old), Some(size), Some(free)) = (old, remote, free) else {
+        return Ok(());
+    };
+    let old_path = dest.join(old);
+    let Ok(old_md) = fs::metadata(&old_path) else {
+        return Ok(());
+    };
+    let have = fs::metadata(part_of(path)).map(|m| m.len()).unwrap_or(0);
+    let need = size.saturating_sub(have);
+    if need > free && need <= free + old_md.len() {
+        println!(
+            "    {}",
+            dim(&format!(
+                "no room for both versions -- removing old {old} first"
+            ))
+        );
+        fs::remove_file(&old_path)?;
+    }
+    Ok(())
+}
+
 /// Update-check -> (mirror race) -> checksum -> download -> record.
 /// Under --dry-run it stops after the check and reports what it would do.
 /// `checked` is a check_update() result the caller already has.
@@ -464,6 +496,13 @@ pub fn fetch_tracked(
         // shortcut: a .part from a build that was itself replaced before the
         // resume is not detected unless sums are published (size alone matches);
         // store the remote size/mtime next to the .part if that ever bites.
+        make_room_for_update(
+            dest,
+            old.as_deref(),
+            &path,
+            meta.as_ref().and_then(|m| m.size),
+            free_space(dest),
+        )?;
         download(&url, &path, expected.as_deref())?;
         if let Some(old) = old.as_deref().filter(|&o| o != name) {
             let old_path = dest.join(old);
@@ -709,5 +748,34 @@ mod tests {
     #[test]
     fn free_space_reports_something() {
         assert!(free_space(&std::env::temp_dir()).is_some_and(|n| n > 0));
+    }
+
+    /// The old version is removed only when that is what makes the new one fit.
+    #[test]
+    fn old_version_goes_first_only_when_needed() {
+        let d = tmpdir("makeroom");
+        let old = d.join("x-1.iso");
+        let new = d.join("x-2.iso");
+        let reset = || fs::write(&old, vec![0u8; 100]).unwrap();
+        reset();
+        // Enough room for both: keep the old one until the new one is in.
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), Some(200)).unwrap();
+        assert!(old.exists());
+        // Only fits once the old one is gone.
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), Some(60)).unwrap();
+        assert!(!old.exists());
+        reset();
+        // Does not fit even then: deleting would only lose the old one.
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(500), Some(60)).unwrap();
+        assert!(old.exists());
+        // A .part already on disk counts as written.
+        fs::write(part_of(&new), vec![0u8; 100]).unwrap();
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), Some(60)).unwrap();
+        assert!(old.exists());
+        // Unknown remote size or free space: never guess.
+        make_room_for_update(&d, Some("x-1.iso"), &new, None, Some(0)).unwrap();
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), None).unwrap();
+        assert!(old.exists());
+        fs::remove_dir_all(&d).unwrap();
     }
 }

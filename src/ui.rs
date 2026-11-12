@@ -187,24 +187,53 @@ fn custom_select(
         .collect()
 }
 
-/// Room on the volume holding `dest`: (capacity, free, budget, fitting set).
-/// The budget adds what catalog items already there take: they stay or get
-/// replaced. Windows ISOs stay too, but no preset touches them.
-fn stick_room(
-    dest: &Path,
-    installed: &BTreeMap<String, (String, u64)>,
-) -> Option<(u64, u64, u64, Vec<&'static Item>)> {
-    // A dry run does not create dest, so ask the nearest folder that exists.
-    let dir = dest.ancestors().find(|p| p.is_dir())?;
-    let free = crate::download::free_space(dir)?;
-    let total = crate::drives::mount_total(&dir.to_string_lossy());
-    let have: Vec<&str> = installed
-        .keys()
-        .map(String::as_str)
-        .filter(|k| find(k).is_some_and(|it| it.tier != Tier::Windows))
-        .collect();
-    let budget = free + have.iter().map(|k| installed[*k].1).sum::<u64>();
-    Some((total, free, budget, fit(budget, &have)))
+/// Capacity of the stick and what is on it now.
+struct Room {
+    total: u64,
+    free: u64,
+    installed: BTreeMap<String, (String, u64)>,
+}
+
+impl Room {
+    fn of(dest: &Path, manifest: &Manifest) -> Option<Room> {
+        // A dry run does not create dest, so ask the nearest folder that exists.
+        let dir = dest.ancestors().find(|p| p.is_dir())?;
+        Some(Room {
+            free: crate::download::free_space(dir)?,
+            total: crate::drives::mount_total(&dir.to_string_lossy()),
+            installed: stick_inventory(dest, manifest).installed,
+        })
+    }
+
+    /// (selection at catalog size, everything else that stays on the stick).
+    fn plan(&self, sel: &[&Item]) -> (u64, u64) {
+        let replaced: u64 = sel
+            .iter()
+            .filter_map(|it| self.installed.get(it.key).map(|(_, size)| *size))
+            .sum();
+        let used = self.total - self.free.min(self.total);
+        (total_bytes(sel), used.saturating_sub(replaced))
+    }
+
+    /// None if `sel` fits, else the stick size it needs.
+    fn needs(&self, sel: &[&Item]) -> Option<&'static str> {
+        let (sel, others) = self.plan(sel);
+        (sel + others > self.total / 100 * 95)
+            .then(|| stick_size_for(sel + others).unwrap_or("bigger than 1 TB"))
+    }
+
+    /// The fit set: what is on the stick stays, the rest of the room is filled.
+    fn fit(&self) -> Vec<&'static Item> {
+        let have: Vec<&str> = self
+            .installed
+            .keys()
+            .map(String::as_str)
+            .filter(|k| find(k).is_some_and(|it| it.tier != Tier::Windows))
+            .collect();
+        let have_bytes: u64 = have.iter().map(|k| self.installed[*k].1).sum();
+        let fixed = (self.total - self.free.min(self.total)).saturating_sub(have_bytes);
+        fit(self.total.saturating_sub(fixed), &have)
+    }
 }
 
 fn gb(bytes: u64) -> String {
@@ -229,36 +258,31 @@ pub fn choose_selection(
     }
 }
 
-/// Warn when what still has to be downloaded exceeds the free space. Items on
-/// the stick count as nothing: they are replaced in place (approx). True to go on.
-fn fits_or_confirmed(
+/// Warn when the selection plus what stays on the stick will not fit, and say
+/// which stick size would. True to go on.
+pub fn fits_or_confirmed(
     selection: &[&'static Item],
     dest: &Path,
     manifest: &Manifest,
     interactive: bool,
 ) -> bool {
-    let installed = stick_inventory(dest, manifest).installed;
-    let Some((total, free, _, _)) = stick_room(dest, &installed) else {
+    let Some(room) = Room::of(dest, manifest) else {
         return true;
     };
-    let new: Vec<&Item> = selection
-        .iter()
-        .copied()
-        .filter(|it| !installed.contains_key(it.key))
-        .collect();
-    let need = total_bytes(&new);
-    if need <= free {
+    let Some(size) = room.needs(selection) else {
         return true;
+    };
+    let (sel, others) = room.plan(selection);
+    let mut msg = format!("\nYour selection: ~{}", gb(sel));
+    if others > 0 {
+        msg += &format!(
+            ", plus ~{} of other files that stay on the stick: ~{} in total",
+            gb(others),
+            gb(sel + others)
+        );
     }
-    let msg = format!(
-        "Your selection needs ~{:.0} GB, the stick has {:.0} GB free.",
-        need as f64 / 1e9,
-        free as f64 / 1e9
-    );
-    println!("\n{}", yellow(&msg));
-    // Everything already on the stick stays, so the new stick holds both.
-    let whole = need + total.saturating_sub(free);
-    let size = stick_size_for(whole).unwrap_or("more than 1 TB");
+    msg += &format!(". The stick holds {}.", gb(room.total));
+    println!("{}", yellow(&msg));
     println!("{}", yellow(&format!("Recommended stick size: {size}")));
     !interactive
         || matches!(
@@ -273,24 +297,27 @@ fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> V
         return custom_select(&none, dest, manifest);
     }
     let installed = stick_inventory(dest, manifest).installed;
-    let room = stick_room(dest, &installed);
-    match (preset, &room) {
-        (Some(Preset::Fit), Some((total, free, _, set))) => {
+    let room = Room::of(dest, manifest);
+    let fit_set = room.as_ref().map(Room::fit);
+    match (preset, &room, &fit_set) {
+        (Some(Preset::Fit), Some(room), Some(set)) => {
             println!(
-                "Stick: {}, {} free -> {} items, ~{:.0} GB",
-                gb(*total),
-                gb(*free),
+                "Stick: {}, {} free -> {} items, ~{}",
+                gb(room.total),
+                gb(room.free),
                 set.len(),
-                total_bytes(set) as f64 / 1e9
+                gb(total_bytes(set))
             );
             return set.clone();
         }
-        (Some(Preset::Fit), None) => {
-            println!("Cannot read the free space of {}.", dest.display());
-            return Vec::new();
+        (Some(Preset::Fit), ..) => {
+            // A script must not mistake "checked nothing" for success.
+            eprintln!("Cannot read the free space of {}.", dest.display());
+            crate::app::farewell();
+            std::process::exit(1);
         }
-        (Some(p), _) => return preset_items(p),
-        (None, _) => {}
+        (Some(p), ..) => return preset_items(p),
+        (None, ..) => {}
     }
 
     let entry = |key: &str, head: String, what: &str, mark: String| {
@@ -299,12 +326,9 @@ fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> V
     let preset = |key, p, name: &str, what| {
         let items = preset_items(p);
         let size = total_bytes(&items);
-        let mark = match &room {
-            Some((_, _, budget, _)) if size > *budget => yellow(&format!(
-                "  needs a {} stick",
-                stick_size_for(size).unwrap_or("bigger")
-            )),
-            _ => String::new(),
+        let mark = match room.as_ref().and_then(|r| r.needs(&items)) {
+            Some(stick) => yellow(&format!("  needs a {stick} stick")),
+            None => String::new(),
         };
         let head = format!(
             "{name:<11}({} items, ~{:.0} GB)",
@@ -314,11 +338,11 @@ fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> V
         entry(key, head, what, mark);
     };
     println!();
-    if let Some((total, free, _, _)) = &room {
-        println!("Stick: {}, {} free", gb(*total), gb(*free));
+    if let Some(room) = &room {
+        println!("Stick: {}, {} free", gb(room.total), gb(room.free));
     }
     println!("{}\n", bold("What should go on the stick?"));
-    if let Some((_, _, _, set)) = &room {
+    if let Some(set) = &fit_set {
         let head = format!(
             "Fit this stick ({} ISOs, ~{:.0} GB)",
             set.len(),
@@ -373,9 +397,9 @@ fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> V
     let choice = ask(&format!("Select [{default}]: ")).to_lowercase();
     let choice = if choice.is_empty() { default } else { &choice };
 
-    match (choice, room) {
+    match (choice, fit_set) {
         ("q", _) => quit(),
-        ("0", Some((_, _, _, set))) => set,
+        ("0", Some(set)) => set,
         ("1", _) => preset_items(Preset::Standard),
         ("2", _) => preset_items(Preset::Advanced),
         ("3", _) => preset_items(Preset::Everything),

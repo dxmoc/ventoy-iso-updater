@@ -92,8 +92,13 @@ offers *"Fit this stick"* first: the best set that fits, from an 8 GB stick
 256 GB. It fills tier by tier (Standard, then Advanced, then Extra), one item per
 category per round, so every kind of tool is covered before anything gets a
 second pick; what is already on the stick is kept and counts as free room, and
-5 % stays free. Presets that would not fit are marked. Sizes come from the
-catalog and are approximate. `--preset fit` does the same without the menu.
+5 % stays free. Sizes come from the catalog and are approximate. `--preset fit`
+does the same without the menu.
+
+Presets that would not fit are marked with the stick size they need, and any
+selection that would not fit -- your own pick included, Windows ISOs counted --
+gets a warning before anything is downloaded: what the selection takes, what
+else stays on the stick, and the stick size that would hold it all.
 
 **Shows you what is on the stick** before you pick anything -- item, exact
 filename, size -- and marks those entries in the picker, so nothing gets
@@ -118,7 +123,8 @@ mirrors are briefly speed-tested against the primary and the fastest one is
 used -- disable with `--no-mirror-test`. The SHA-256 always comes from the
 primary; a mirror whose own checksum disagrees is dropped. An image that
 would not fit in the free space is refused before the download starts, instead
-of filling the stick and failing at the end.
+of filling the stick and failing at the end. On a full stick where the new
+version only fits once the old one is gone, the old one is removed first.
 
 **Quiet output.** Version checks run as one live counter, followed by a short
 plan (what will be downloaded, how many are current, what failed). Only items

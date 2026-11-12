@@ -821,7 +821,8 @@ pub fn total_bytes(items: &[&Item]) -> u64 {
         .sum()
 }
 
-/// Smallest common stick size that holds `bytes` with ~5 % to spare; None
+/// Smallest common stick size that holds `bytes` with ~5 % to spare after
+/// formatting; None
 /// above 1 TB.
 pub fn stick_size_for(bytes: u64) -> Option<&'static str> {
     const SIZES: [(u64, &str); 8] = [
@@ -836,9 +837,25 @@ pub fn stick_size_for(bytes: u64) -> Option<&'static str> {
     ];
     SIZES
         .iter()
-        .find(|(gb, _)| bytes <= gb * 1_000_000_000 / 100 * 95)
+        // A "256 GB" stick formats to about 97 % of that, and 5 % stays free.
+        .find(|(gb, _)| bytes <= gb * 1_000_000_000 / 100 * 92)
         .map(|(_, name)| *name)
 }
+
+/// Tried first within their category when space is short: the beginner
+/// desktops, the plain servers, the everyday rescue tools. The rest follows
+/// in catalog order.
+const FIT_FIRST: &[&str] = &[
+    "mint",
+    "ubuntu_desk26",
+    "fedora_kde",
+    "debian",
+    "ubuntu_srv26",
+    "systemrescue",
+    "hbcd",
+    "gparted",
+    "clonezilla",
+];
 
 /// The set that fits `budget` bytes (keeping 5 % headroom). First what is
 /// already on the stick (`have`: it stays there either way) and MemTest86, then
@@ -847,22 +864,22 @@ pub fn stick_size_for(bytes: u64) -> Option<&'static str> {
 /// Windows never. Returned in catalog order.
 pub fn fit(budget: u64, have: &[&str]) -> Vec<&'static Item> {
     let mut left = budget / 100 * 95;
-    let mut take = |it: &Item| {
+    let mut add = |it: &Item, force: bool| {
         let size = u64::from(it.size_mb) * 1_000_000;
         let fits = size <= left;
-        if fits {
-            left -= size;
+        if fits || force {
+            left = left.saturating_sub(size);
         }
-        fits
+        fits || force
     };
+    // What is on the stick stays either way, so it is always part of the set.
     let mut picked: Vec<&'static Item> = CATALOG
         .iter()
-        .filter(|it| {
-            it.tier != Tier::Windows
-                && (have.contains(&it.key) || matches!(it.kind, Kind::Memtest))
-                && take(it)
-        })
+        .filter(|it| it.tier != Tier::Windows && have.contains(&it.key) && add(it, true))
         .collect();
+    picked.extend(CATALOG.iter().filter(|it| {
+        matches!(it.kind, Kind::Memtest) && !have.contains(&it.key) && add(it, false)
+    }));
     for tier in [Tier::Standard, Tier::Advanced, Tier::Extra] {
         let mut queues: Vec<(&str, std::collections::VecDeque<&'static Item>)> = Vec::new();
         for it in CATALOG.iter().filter(|it| it.tier == tier) {
@@ -874,11 +891,19 @@ pub fn fit(budget: u64, have: &[&str]) -> Vec<&'static Item> {
                 None => queues.push((it.category, [it].into())),
             }
         }
+        for (_, q) in &mut queues {
+            q.make_contiguous().sort_by_key(|it| {
+                FIT_FIRST
+                    .iter()
+                    .position(|k| *k == it.key)
+                    .unwrap_or(usize::MAX)
+            });
+        }
         while queues.iter().any(|(_, q)| !q.is_empty()) {
             for (_, q) in &mut queues {
                 // What does not fit now never will: the budget only shrinks.
                 while let Some(it) = q.pop_front() {
-                    if take(it) {
+                    if add(it, false) {
                         picked.push(it);
                         break;
                     }
@@ -928,12 +953,13 @@ mod tests {
     fn stick_sizes_round_up_with_headroom() {
         let gb = |n: f64| (n * 1e9) as u64;
         assert_eq!(stick_size_for(0), Some("8 GB"));
-        assert_eq!(stick_size_for(gb(7.6)), Some("8 GB"));
-        assert_eq!(stick_size_for(gb(7.7)), Some("16 GB")); // 8 GB minus 5 % is 7.6
+        assert_eq!(stick_size_for(gb(7.3)), Some("8 GB"));
+        assert_eq!(stick_size_for(gb(7.4)), Some("16 GB")); // 92 % of 8 GB is 7.36
         assert_eq!(stick_size_for(gb(38.3)), Some("64 GB"));
         assert_eq!(stick_size_for(gb(207.0)), Some("256 GB"));
-        assert_eq!(stick_size_for(gb(950.0)), Some("1 TB"));
-        assert_eq!(stick_size_for(gb(951.0)), None);
+        assert_eq!(stick_size_for(gb(257.0)), Some("512 GB"));
+        assert_eq!(stick_size_for(gb(920.0)), Some("1 TB"));
+        assert_eq!(stick_size_for(gb(921.0)), None);
     }
 
     #[test]
@@ -970,11 +996,18 @@ mod tests {
             fit(u64::MAX / 2, &[]).len(),
             preset_items(Preset::Everything).len()
         );
-        // What is on the stick comes first, even an Extra item.
-        let keys: Vec<_> = fit(5_200_000_000, &["slackware", "win11_de"])
+        // What is on the stick is always in, even an Extra item that alone
+        // exceeds the budget; Windows never.
+        let keys: Vec<_> = fit(3_000_000_000, &["slackware", "win11_de"])
             .iter()
             .map(|it| it.key)
             .collect();
-        assert_eq!(keys, ["slackware", "memtest"]);
+        assert_eq!(keys, ["slackware"]);
+        // Small sticks get the beginner desktop first.
+        assert!(
+            fit(8_000_000_000 / 100 * 97, &[])
+                .iter()
+                .any(|it| it.key == "mint")
+        );
     }
 }
