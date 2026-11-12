@@ -1,0 +1,24 @@
+[package]
+name = "ventoy-iso-updater"
+version = "1.0.0"
+edition = "2024"
+description = "Keeps the ISOs on a Ventoy stick up to date"
+license = "MIT"
+repository = "https://github.com/dxmoc/ventoy-iso-updater"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+regex = "1.13.1"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha2 = "0.11.1"
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "gzip"] }
+zip = { version = "9.5.1", default-features = false, features = ["deflate"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

@@ -8,3 +8,6 @@ __pycache__/
 *.part
 ventoy_versions.json
 isos/
+
+# Rust build output
+/target/
