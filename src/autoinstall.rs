@@ -320,7 +320,10 @@ mod tests {
 
             sync(&root, &manifest(&[("win11_en", current)]), false, WINS);
 
-            let raw = fs::read_to_string(root.join("ventoy/ventoy.json")).unwrap();
+            // CRLF on Windows (written in text mode, like Python did).
+            let raw = fs::read_to_string(root.join("ventoy/ventoy.json"))
+                .unwrap()
+                .replace("\r\n", "\n");
             let config = read_json(&root);
             fs::remove_dir_all(&root).unwrap();
             let entries = config["auto_install"].as_array().unwrap();
