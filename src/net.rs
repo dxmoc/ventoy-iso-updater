@@ -41,7 +41,17 @@ pub const UA: &str = concat!(
 
 type Body = Response<ureq::Body>;
 
-static AGENT: LazyLock<ureq::Agent> = LazyLock::new(ureq::Agent::new_with_defaults);
+/// TLS checks against the OS trust store, like Python's ssl module did: antivirus
+/// HTTPS scanning and corporate proxies install their root there.
+pub(crate) static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    let tls = ureq::tls::TlsConfig::builder()
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    ureq::Agent::config_builder()
+        .tls_config(tls)
+        .build()
+        .new_agent()
+});
 static ABORT: AtomicBool = AtomicBool::new(false);
 static HOST_LOCKS: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
     LazyLock::new(Default::default);
@@ -160,7 +170,9 @@ fn fetch(url: &str, secs: u64) -> Result<String> {
         headers.push(("Authorization", a));
     }
     let mut r = send(url, false, &headers, secs, false)?;
-    let bytes = r.body_mut().with_config().limit(u64::MAX).read_to_vec()?;
+    // Pages, JSON and sums files are small; a server answering a sums URL with
+    // the image itself would otherwise pull gigabytes into memory.
+    let bytes = r.body_mut().with_config().limit(16 << 20).read_to_vec()?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 

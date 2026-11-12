@@ -426,7 +426,8 @@ fn uup_build_iso(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VentoyISOUpdater/{}",
         crate::VERSION
     );
-    let pkg = ureq::post(&url)
+    let pkg = crate::net::AGENT
+        .post(&url)
         .header("User-Agent", &ua)
         .config()
         .timeout_global(Some(Duration::from_secs(120)))
