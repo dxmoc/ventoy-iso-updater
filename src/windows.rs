@@ -118,23 +118,69 @@ fn shell_execute(verb: &str, file: &str, params: Option<&str>) -> bool {
 
 /// Relaunch elevated (UAC); true if the elevated copy took over.
 #[cfg(windows)]
-pub fn relaunch_as_admin() -> bool {
+pub fn relaunch_as_admin(dest: &Path) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // The update notice was already shown in this window. (Not added twice:
-    // clap rejects a repeated flag where argparse did not.)
-    if !args.iter().any(|a| a == "--no-update-check") {
-        args.push("--no-update-check".into());
-    }
-    let params: Vec<String> = args.iter().map(|a| format!("\"{a}\"")).collect();
-    shell_execute("runas", &exe.to_string_lossy(), Some(&params.join(" ")))
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let params = elevated_params(&raw, dest);
+    shell_execute("runas", &exe.to_string_lossy(), Some(&params))
 }
 
 #[cfg(not(windows))]
-pub fn relaunch_as_admin() -> bool {
+pub fn relaunch_as_admin(_dest: &Path) -> bool {
     false
+}
+
+/// Command line for the elevated copy: the same flags, but the resolved
+/// absolute --dest (runas starts in System32, and a picked drive was never a
+/// flag) and no second update notice. clap rejects a repeated flag, so the old
+/// --dest and --no-update-check go first.
+#[cfg(any(windows, test))]
+fn elevated_params(raw: &[String], dest: &Path) -> String {
+    let mut args: Vec<String> = Vec::new();
+    let mut it = raw.iter();
+    while let Some(a) = it.next() {
+        if a == "--dest" {
+            it.next();
+        } else if !a.starts_with("--dest=") && a != "--no-update-check" {
+            args.push(a.clone());
+        }
+    }
+    args.extend([
+        "--dest".into(),
+        dest.to_string_lossy().into_owned(),
+        "--no-update-check".into(),
+    ]);
+    args.iter()
+        .map(|a| quote_arg(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Quote one argument for the MSVC command-line parser: backslashes are only
+/// special before a quote, so `E:\` must end as `"E:\\"`, not `"E:\"`.
+#[cfg(any(windows, test))]
+fn quote_arg(a: &str) -> String {
+    let (mut out, mut slashes) = (String::from('"'), 0);
+    for c in a.chars() {
+        match c {
+            '\\' => slashes += 1,
+            '"' => {
+                out += &"\\".repeat(2 * slashes + 1);
+                out.push('"');
+                slashes = 0;
+            }
+            _ => {
+                out += &"\\".repeat(slashes);
+                out.push(c);
+                slashes = 0;
+            }
+        }
+    }
+    out += &"\\".repeat(2 * slashes);
+    out.push('"');
+    out
 }
 
 /// shutil.which: the first PATH entry holding `name` (with PATHEXT on Windows).
@@ -936,6 +982,16 @@ mod tests {
             "Win_11_25H2_German_26200.1.iso"
         );
         assert!(!pid_alive("not-a-pid"));
+        assert_eq!(quote_arg(r"E:\"), r#""E:\\""#);
+        assert_eq!(quote_arg(r#"a\"b c"#), r#""a\\\"b c""#);
+        assert_eq!(quote_arg(r"C:\x y\iso"), r#""C:\x y\iso""#);
+        let raw: Vec<String> = ["--dest", "isos", "--windows", "uup", "--no-update-check"]
+            .map(String::from)
+            .into();
+        assert_eq!(
+            elevated_params(&raw, Path::new(r"E:\")),
+            r#""--windows" "uup" "--dest" "E:\\" "--no-update-check""#
+        );
         assert!(pid_alive(&std::process::id().to_string()));
     }
 

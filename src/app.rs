@@ -144,7 +144,7 @@ fn run_with(mut args: Args) -> i32 {
     }
     let dest = match &args.dest {
         Some(d) => expand_dest(d),
-        None => ui::choose_dest(),
+        None => expand_dest(&ui::choose_dest().to_string_lossy()),
     };
     if !args.dry_run
         && let Err(e) = std::fs::create_dir_all(&dest)
@@ -183,13 +183,14 @@ fn run_with(mut args: Args) -> i32 {
     // elevation once (a single UAC prompt) so the run can proceed unattended.
     if !win_items.is_empty()
         && method == WinMethod::Uup
+        && !args.dry_run
         && cfg!(windows)
         && !windows::is_admin()
         && windows::windows_needs_build(&dest, &manifest, &args, &win_items)
     {
         println!("\nWindows ISOs (UUP dump) need administrator rights (DISM).");
         println!("Requesting elevation -- please confirm the UAC prompt...");
-        if windows::relaunch_as_admin() {
+        if windows::relaunch_as_admin(&dest) {
             println!("Continuing in the elevated window.");
             return 0;
         }
