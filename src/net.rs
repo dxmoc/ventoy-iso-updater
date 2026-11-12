@@ -2,7 +2,7 @@
 //! (Python: _auth_for .. latest_in_listing, lines ~140-435).
 
 use std::collections::{BTreeSet, HashMap};
-use std::io::Read;
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -422,24 +422,34 @@ pub fn fastest_mirror(urls: &[String]) -> String {
     if urls.len() <= 1 {
         return urls.first().map(|u| u.to_string()).unwrap_or_default();
     }
-    println!(
-        "    speed-testing {} mirrors (up to {SPEEDTEST_SECONDS:.0}s each)...",
-        urls.len()
-    );
+    // Up to SPEEDTEST_SECONDS per host: say so while it runs, then overwrite.
+    let tty = std::io::stdout().is_terminal();
+    if tty {
+        print!("    mirror: speed-testing {} hosts...\r", urls.len());
+        let _ = std::io::stdout().flush();
+    }
     let (mut best, mut best_bps) = (urls[0], -1.0);
-    for u in urls {
+    for u in &urls {
         let bps = measure_speed(u);
-        let host = host_of(u);
-        if bps > 0.0 {
-            println!("      {host:<42} {:>6.1} Mbit/s", bps * 8.0 / 1e6);
-        } else {
-            println!("      {host:<42} unreachable");
-        }
         if bps > best_bps {
             (best, best_bps) = (u, bps);
         }
     }
-    println!("    -> fastest: {}", host_of(best));
+    let host = host_of(best);
+    if best_bps > 0.0 {
+        let mbit = best_bps * 8.0 / 1e6;
+        let line = format!(
+            "mirror: {host}, {mbit:.0} Mbit/s, fastest of {}",
+            urls.len()
+        );
+        println!(
+            "    {}{}",
+            crate::style::dim(&line),
+            if tty { "          " } else { "" }
+        );
+    } else {
+        println!("    mirror: none answered the speed test, using {host}");
+    }
     best.clone()
 }
 

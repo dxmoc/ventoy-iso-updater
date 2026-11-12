@@ -1,7 +1,7 @@
 //! CLI and the top-level run (Python: main()).
 
 use std::collections::{HashMap, HashSet};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,6 +10,7 @@ use clap::{Parser, ValueEnum};
 
 use crate::catalog::{Item, Kind, Resolved};
 use crate::manifest::{Check, Manifest};
+use crate::style::{self, bold, dim};
 use crate::{Summary, autoinstall, cleanup, download, manifest, net, ui, windows};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -17,6 +18,8 @@ pub enum Preset {
     Standard,
     Advanced,
     Everything,
+    /// the best mix that fits the target drive
+    Fit,
     Custom,
 }
 
@@ -162,7 +165,14 @@ fn run_with(mut args: Args) -> i32 {
     if args.preset.is_none() {
         let already: HashSet<&str> = selection.iter().map(|it| it.key).collect();
         let win = ui::choose_windows(&already, &mut args);
-        selection.extend(win);
+        if !win.is_empty() {
+            selection.extend(win);
+            // Windows images are 5-8 GB each, so check again with them in.
+            if !ui::fits_or_confirmed(&selection, &dest, &manifest, true) {
+                selection.retain(|it| !matches!(it.kind, Kind::Windows(_)));
+                println!("Windows ISOs left out.");
+            }
+        }
     }
     let method = *args.windows.get_or_insert(WinMethod::Massgrave);
     let iso_items: Vec<_> = selection
@@ -201,8 +211,11 @@ fn run_with(mut args: Args) -> i32 {
 
     println!("\nTarget: {}", dest.display());
     println!(
-        "Version manifest: {}",
-        dest.join(crate::MANIFEST_NAME).display()
+        "{}",
+        dim(&format!(
+            "Version manifest: {}",
+            dest.join(crate::MANIFEST_NAME).display()
+        ))
     );
     println!(
         "Selected: {} ISOs{}{}\n",
@@ -215,27 +228,33 @@ fn run_with(mut args: Args) -> i32 {
         }
     );
 
-    // ---- phase 1: detect newest versions ----
-    println!("Checking for latest versions...\n");
+    // ---- phase 1: detect newest versions, then show the plan ----
     let mut summary: Summary = Vec::new();
     let mut resolved: Vec<(String, String, Resolved)> = Vec::new();
     let mut checked: HashMap<&str, Check> = HashMap::new();
-    for (item, res) in iso_items
-        .iter()
-        .zip(detect_all(&iso_items, &dest, &manifest, args.force))
-    {
+    let mut todo: Vec<(&str, String, String, u64)> = Vec::new(); // label, file, reason, bytes
+    let mut failed: Vec<String> = Vec::new();
+    let detected = detect_all(&iso_items, &dest, &manifest, args.force);
+    style::print_notes();
+    for (item, res) in iso_items.iter().zip(detected) {
         match res {
             Err(e) => {
-                println!("  {:<24} -> DETECT FAILED ({e})", item.label);
+                failed.push(format!("{}: DETECT FAILED ({e})", item.label));
                 summary.push((item.label.to_string(), format!("FAIL (detect): {e}")));
             }
             Ok((r, check)) => {
-                let extra = if r.mirrors.is_empty() {
-                    String::new()
-                } else {
-                    format!("  (+{} mirrors)", r.mirrors.len())
+                let (need, reason, size) = match &check {
+                    Some(c) => (
+                        c.need,
+                        c.reason.clone(),
+                        c.meta.as_ref().and_then(|m| m.size),
+                    ),
+                    None => (true, "forced".to_string(), None),
                 };
-                println!("  {:<24} -> {}{extra}", item.label, r.name);
+                if need {
+                    let bytes = size.unwrap_or(u64::from(item.size_mb) * 1_000_000);
+                    todo.push((item.label, r.name.clone(), reason, bytes));
+                }
                 if let Some(c) = check {
                     checked.insert(item.key, c);
                 }
@@ -243,26 +262,44 @@ fn run_with(mut args: Args) -> i32 {
             }
         }
     }
-    if memtest {
-        println!("  {:<24} -> {MEMTEST_IMG} (latest zip)", "MemTest86");
+    let memtest_check = memtest.then(|| memtest_check(&dest, &manifest, &args));
+    if let Some(c) = memtest_check.as_ref().filter(|c| c.need) {
+        let size = crate::catalog::find("memtest").map_or(0, |it| it.size_mb);
+        todo.push((
+            "MemTest86",
+            MEMTEST_IMG.into(),
+            c.reason.clone(),
+            u64::from(size) * 1_000_000,
+        ));
     }
+    print_plan(&todo, resolved.len() + memtest as usize, &failed);
     if !win_items.is_empty() {
         let how = match method {
             WinMethod::Uup => "UUP dump (official, local build)",
             WinMethod::Fido => "Fido (official MS link)",
             WinMethod::Massgrave => "massgrave hand-off",
         };
-        println!(
-            "  {:<24} -> {} ISO(s) via {how}",
-            "Windows",
-            win_items.len()
-        );
+        // Every Windows method drives a browser or builds an image locally, so
+        // a dry run has nothing to report without doing the work.
+        let skipped = if args.dry_run {
+            ", skipped in --dry-run"
+        } else {
+            ""
+        };
+        println!("Windows: {} ISO(s) via {how}{skipped}", win_items.len());
     }
-    println!();
 
     // ---- phase 2: sequential downloads (only what changed) ----
-    println!("Starting sequential downloads...\n");
+    let (mut n, total) = (0, todo.len());
+    let mut header = |label: &str, name: &str| {
+        n += 1;
+        println!("\n[{n}/{total}] {}  {}", bold(label), dim(name));
+    };
     for (key, label, r) in &resolved {
+        let check = checked.remove(key.as_str());
+        if !args.dry_run && check.as_ref().is_none_or(|c| c.need) {
+            header(label, &r.name);
+        }
         download::fetch_tracked(
             &dest,
             &mut manifest,
@@ -273,22 +310,24 @@ fn run_with(mut args: Args) -> i32 {
             &r.mirrors,
             &args,
             &mut summary,
-            checked.remove(key.as_str()),
+            check,
         );
     }
-    if memtest {
-        update_memtest(&dest, &mut manifest, &args, &mut summary);
+    if let Some(check) = memtest_check {
+        if !args.dry_run && check.need {
+            header("MemTest86", MEMTEST_IMG);
+        }
+        update_memtest(&dest, &mut manifest, &args, &mut summary, check);
     }
-
-    // Every Windows method drives a browser or builds an image locally, so a
-    // dry run has nothing to report without doing the work.
     if !win_items.is_empty() && args.dry_run {
-        println!(
-            "==> {:<24} {} item(s) skipped in --dry-run\n",
-            "Windows",
-            win_items.len()
-        );
+        for it in &win_items {
+            summary.push((
+                it.label.into(),
+                "SKIP (Windows is not run in --dry-run)".into(),
+            ));
+        }
     } else if !win_items.is_empty() {
+        println!();
         windows::process_windows(&dest, &mut manifest, &args, &win_items, &mut summary);
     }
 
@@ -324,6 +363,17 @@ fn detect_all(
     force: bool,
 ) -> Vec<anyhow::Result<(Resolved, Option<Check>)>> {
     let next = AtomicUsize::new(0);
+    // One live line on a terminal; elsewhere nothing until the plan.
+    let tty = std::io::stdout().is_terminal();
+    let done = Mutex::new(0);
+    let tick = || {
+        let mut d = done.lock().unwrap();
+        *d += 1;
+        if tty {
+            print!("\rChecking versions {}/{}", *d, items.len());
+            let _ = std::io::stdout().flush();
+        }
+    };
     let slots: Vec<Mutex<Option<_>>> = items.iter().map(|_| Mutex::new(None)).collect();
     std::thread::scope(|s| {
         for _ in 0..RESOLVE_WORKERS.min(items.len()) {
@@ -341,19 +391,23 @@ fn detect_all(
                         (r, check)
                     });
                     *slots[i].lock().unwrap() = Some(res);
+                    tick();
                 }
             });
         }
     });
+    if tty {
+        print!("\r{:40}\r", "");
+    }
     slots
         .into_iter()
         .map(|m| m.into_inner().unwrap().unwrap())
         .collect()
 }
 
-/// MemTest86 is special: a zip on the server, an .img on the stick.
-fn update_memtest(dest: &Path, manifest: &mut Manifest, args: &Args, summary: &mut Summary) {
-    let check = if args.force {
+/// Whether MemTest86 needs a download; forced runs always do.
+fn memtest_check(dest: &Path, manifest: &Manifest, args: &Args) -> Check {
+    if args.force {
         Check {
             need: true,
             reason: "forced".into(),
@@ -361,27 +415,26 @@ fn update_memtest(dest: &Path, manifest: &mut Manifest, args: &Args, summary: &m
         }
     } else {
         manifest::check_update(dest, manifest.get("memtest"), MEMTEST_URL, MEMTEST_IMG)
-    };
-    println!("==> {:<24} {MEMTEST_IMG}  [{}]", "MemTest86", check.reason);
+    }
+}
+
+/// MemTest86 is special: a zip on the server, an .img on the stick.
+fn update_memtest(
+    dest: &Path,
+    manifest: &mut Manifest,
+    args: &Args,
+    summary: &mut Summary,
+    check: Check,
+) {
     let name = MEMTEST_IMG.to_string();
-    if args.dry_run {
-        summary.push((
-            name,
-            if check.need {
-                "WOULD DOWNLOAD"
-            } else {
-                "SKIP (up to date)"
-            }
-            .into(),
-        ));
-        println!();
-    } else if !check.need {
+    if !check.need {
         summary.push((name, "SKIP (up to date)".into()));
-        println!();
+    } else if args.dry_run {
+        summary.push((name, "WOULD DOWNLOAD".into()));
     } else {
         match download::download_memtest(dest) {
             Ok(()) => {
-                println!("    ok\n");
+                println!("    {}", style::green("done, image extracted"));
                 // Record the source zip's size/mtime so reruns detect changes.
                 let meta = check.meta.unwrap_or_else(|| net::remote_meta(MEMTEST_URL));
                 manifest::record_version(
@@ -395,10 +448,32 @@ fn update_memtest(dest: &Path, manifest: &mut Manifest, args: &Args, summary: &m
                 summary.push((name, "OK (updated)".into()));
             }
             Err(e) => {
-                println!("    FAILED: {e}\n");
+                println!("    {}", style::red(&format!("FAILED: {e}")));
                 summary.push((name, format!("FAIL: {e}")));
             }
         }
+    }
+}
+
+/// What phase 2 will fetch, what is current, and what could not be resolved.
+fn print_plan(todo: &[(&str, String, String, u64)], resolved: usize, failed: &[String]) {
+    if todo.is_empty() {
+        println!("{}", bold("To download: nothing"));
+    } else {
+        let bytes: u64 = todo.iter().map(|t| t.3).sum();
+        let head = format!(
+            "To download ({}, ~{:.1} GB):",
+            todo.len(),
+            bytes as f64 / 1e9
+        );
+        println!("{}", bold(&head));
+        for (label, name, reason, _) in todo {
+            println!("  {label:<24} {}", dim(&format!("{name}  [{reason}]")));
+        }
+    }
+    println!("Up to date: {}", resolved - todo.len());
+    for f in failed {
+        println!("{}", style::red(f));
     }
 }
 
@@ -407,24 +482,49 @@ fn print_summary(summary: &Summary, dest: &Path) {
         println!("Nothing to do.");
         return;
     }
-    println!("\n{} SUMMARY {}", "=".repeat(16), "=".repeat(16));
-    let width = summary
+    // Up-to-date items only count; everything else gets a line.
+    let shown: Vec<_> = summary
+        .iter()
+        // Up to date only counts; WOULD DOWNLOAD is already in the plan above.
+        .filter(|(_, s)| !s.starts_with("SKIP (up to date)") && !s.starts_with("WOULD"))
+        .collect();
+    if !shown.is_empty() {
+        println!("\n{}", bold("Summary"));
+    }
+    let width = shown
         .iter()
         .map(|(n, _)| n.chars().count())
         .max()
         .unwrap_or(0);
-    for (name, status) in summary {
-        println!("  {name:<width$}  {status}");
+    for (name, status) in shown {
+        println!("  {name:<width$}  {}", style::status(status));
     }
-    let count = |p: &str| summary.iter().filter(|(_, s)| s.starts_with(p)).count();
-    let fails = count("FAIL");
-    println!(
-        "\nDone. {} items | {} updated | {} up-to-date | {fails} failed | {} manual (Windows).",
-        summary.len(),
-        count("OK"),
-        count("SKIP"),
-        count("MANUAL")
-    );
+    // One entry per selected item; deletions of old versions come on top.
+    let items: Vec<&str> = summary
+        .iter()
+        .map(|(_, s)| s.as_str())
+        .filter(|s| !s.starts_with("DELETE"))
+        .collect();
+    let count = |p: &str| items.iter().filter(|s| s.starts_with(p)).count();
+    let (ok, current, would) = (count("OK"), count("SKIP (up to date)"), count("WOULD"));
+    let (fails, manual) = (count("FAIL"), count("MANUAL"));
+    let skipped = items.len() - ok - current - would - fails - manual;
+    let deleted = summary
+        .iter()
+        .filter(|(_, s)| s.starts_with("DELETED"))
+        .count();
+    let mut parts = vec![format!("{ok} updated"), format!("{current} up to date")];
+    for (n, what) in [(would, "would download"), (skipped, "skipped")] {
+        if n > 0 {
+            parts.push(format!("{n} {what}"));
+        }
+    }
+    parts.push(format!("{fails} failed"));
+    parts.push(format!("{manual} manual (Windows)"));
+    if deleted > 0 {
+        parts.push(format!("{deleted} old version(s) deleted"));
+    }
+    println!("\nDone. {} items: {}.", items.len(), parts.join(" | "));
     if fails > 0 {
         println!(
             "For any FAILED item, download it manually into: {}",

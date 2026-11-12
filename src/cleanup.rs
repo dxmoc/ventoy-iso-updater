@@ -336,10 +336,15 @@ pub fn print_inventory(dest: &Path, inv: &Inventory, numbers: Option<&BTreeMap<S
         .map(|v| v.1)
         .chain(inv.others.iter().map(|o| o.1))
         .sum();
+    // Same count as the menu's "Update what's there"; unknown images apart.
+    let others = match inv.others.len() {
+        0 => String::new(),
+        n => format!(" + {n} not in the catalog"),
+    };
     println!(
-        "\nAlready on {} -- {} item(s), {}:\n",
+        "\nAlready on {} -- {} item(s){others}, {}:\n",
         dest.display(),
-        inv.installed.len() + inv.others.len(),
+        inv.installed.len(),
         fmt_size(total)
     );
     let cat = catalog::catalog();

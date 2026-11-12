@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use regex::Regex;
-use ventoy_iso_updater::catalog::{Kind, catalog};
-use ventoy_iso_updater::net::{remote_sha256_with, verkey};
+use ventoy_iso_updater::catalog::{Kind, catalog, find};
+use ventoy_iso_updater::net::{remote_meta, remote_sha256_with, verkey};
 use ventoy_iso_updater::resolvers::{
     FEDORA_RELEASES, FREEBSD_BASE, fedora_iso_with, freebsd_with, leap_versions, r_opensuse_leap,
 };
@@ -34,10 +34,23 @@ fn not_found() -> anyhow::Error {
     ureq::Error::StatusCode(404).into()
 }
 
-/// Call one resolver, never fail.
+/// Call one resolver, never fail. Also warns when the catalog's size_mb is
+/// more than 50 % off the real size, so the fit-to-stick table stays honest.
 fn resolve(&(key, label, f): &Entry) -> Outcome {
     match f() {
-        Ok(r) => (key, label, true, r.name),
+        Ok(r) => {
+            let want = find(key).map_or(0, |it| u64::from(it.size_mb) * 1_000_000);
+            if let Some(real) = remote_meta(&r.url).size
+                && real.abs_diff(want) > want / 2
+            {
+                println!(
+                    "  WARN size {key:<14} is {:.1} GB, catalog says {:.1} GB",
+                    real as f64 / 1e9,
+                    want as f64 / 1e9
+                );
+            }
+            (key, label, true, r.name)
+        }
         Err(e) => (key, label, false, format!("{e:#}")),
     }
 }

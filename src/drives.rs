@@ -35,7 +35,7 @@ fn win_volume_label(root: &str) -> String {
 }
 
 #[cfg(windows)]
-fn mount_total(path: &str) -> u64 {
+pub(crate) fn mount_total(path: &str) -> u64 {
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
     let mut total = 0u64;
     // SAFETY: NUL-terminated path; the two unused outputs are optional.
@@ -52,7 +52,7 @@ fn mount_total(path: &str) -> u64 {
 
 #[cfg(unix)]
 #[allow(clippy::unnecessary_cast)] // field types differ between Linux and macOS
-fn mount_total(path: &str) -> u64 {
+pub(crate) fn mount_total(path: &str) -> u64 {
     let Ok(c) = std::ffi::CString::new(path) else {
         return 0;
     };
@@ -275,7 +275,29 @@ pub fn detect_usb_drives() -> Vec<Drive> {
         let total = mount_total(&root);
         drives.push((root, label, total));
     }
+    drives.retain(|d| !is_ventoy_efi(d));
     drives
+}
+
+/// Ventoy's own 32 MiB EFI partition sits on the same stick and is removable
+/// too; ISOs never go there.
+fn is_ventoy_efi((path, label, _): &Drive) -> bool {
+    let base = path
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next();
+    [Some(label.as_str()), base]
+        .into_iter()
+        .flatten()
+        .any(|s| s.eq_ignore_ascii_case("VTOYEFI"))
+}
+
+/// Mounts the running system boots from. Unraid and some appliances boot
+/// from a USB stick mounted at /boot, which is removable -- offering it as the
+/// default target would write ISOs onto the OS flash.
+#[cfg(not(windows))]
+fn is_system_mount(mnt: &str) -> bool {
+    matches!(mnt, "/" | "/efi" | "/boot") || mnt.starts_with("/boot/")
 }
 
 /// Removable drives, best-effort.
@@ -291,6 +313,7 @@ pub fn detect_usb_drives() -> Vec<Drive> {
     for (device, mnt, _) in proc_mounts() {
         if !device.starts_with("/dev/")
             || seen.contains(&mnt)
+            || is_system_mount(&mnt)
             || !block_is_removable(&device, Path::new("/sys/block"))
         {
             continue;
@@ -359,6 +382,7 @@ pub fn detect_usb_drives() -> Vec<Drive> {
             drives.push((path, entry, total));
         }
     }
+    drives.retain(|d| !is_ventoy_efi(d));
     drives
 }
 
@@ -375,6 +399,27 @@ mod tests {
                 std::path::Path::new(&path).is_dir(),
                 "{path} is offered but is not a directory"
             );
+        }
+    }
+
+    #[test]
+    fn ventoy_efi_partition_is_never_offered() {
+        let d = |p: &str, l: &str| (p.to_string(), l.to_string(), 32 << 20);
+        assert!(is_ventoy_efi(&d("H:\\", "VTOYEFI")));
+        assert!(is_ventoy_efi(&d("/media/me/vtoyefi", "vtoyefi")));
+        assert!(is_ventoy_efi(&d("/Volumes/VTOYEFI/", "(no label)")));
+        assert!(!is_ventoy_efi(&d("E:\\", "Ventoy")));
+        assert!(!is_ventoy_efi(&d("/media/me/Ventoy", "Ventoy")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_mounts_are_never_offered() {
+        for m in ["/", "/boot", "/boot/efi", "/efi"] {
+            assert!(is_system_mount(m), "{m}");
+        }
+        for m in ["/media/me/Ventoy", "/run/media/me/VENTOY", "/bootstick"] {
+            assert!(!is_system_mount(m), "{m}");
         }
     }
 

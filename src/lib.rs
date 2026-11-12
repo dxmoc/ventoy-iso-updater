@@ -10,6 +10,7 @@ pub mod drives;
 pub mod manifest;
 pub mod net;
 pub mod resolvers;
+pub mod style;
 pub mod ui;
 pub mod windows;
 

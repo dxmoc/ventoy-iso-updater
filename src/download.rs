@@ -2,7 +2,7 @@
 //! (Python: _progress .. download_memtest, fetch_tracked).
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -13,6 +13,7 @@ use crate::Summary;
 use crate::app::Args;
 use crate::manifest::{self, Check, Manifest};
 use crate::net::{self, Stream, fmt_size};
+use crate::style::{dim, green, red};
 
 /// Render one progress line: %, sizes, and live speed in MB/s + Mbit/s.
 fn progress(done: u64, total: Option<u64>, bps: f64, last: bool) {
@@ -29,6 +30,23 @@ fn progress(done: u64, total: Option<u64>, bps: f64, last: bool) {
             fmt_size(done)
         ),
     };
+    // Piped, every redraw would be a line of its own: print one per 10 %
+    // (or per 10 s when the size is unknown) instead.
+    if !io::stdout().is_terminal() {
+        static SHOWN: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+        let tenth = total.filter(|&t| t > 0).map_or(0, |t| done * 10 / t);
+        let mut shown = SHOWN.lock().unwrap_or_else(|e| e.into_inner());
+        let (prev, at) = *shown.get_or_insert((0, Instant::now()));
+        if last {
+            *shown = None;
+        } else if tenth > prev || at.elapsed().as_secs() >= 10 {
+            *shown = Some((tenth, Instant::now()));
+        } else {
+            return;
+        }
+        println!("{line}");
+        return;
+    }
     // Pad to clear any leftover characters from a longer previous line.
     print!("\r{line}      {}", if last { "\n" } else { "" });
     let _ = io::stdout().flush();
@@ -76,7 +94,7 @@ fn part_of(dest: &Path) -> PathBuf {
 }
 
 /// Bytes free for the caller on the volume holding `dir`; None if unknown.
-fn free_space(dir: &Path) -> Option<u64> {
+pub(crate) fn free_space(dir: &Path) -> Option<u64> {
     let dir = if dir.as_os_str().is_empty() {
         Path::new(".")
     } else {
@@ -160,11 +178,12 @@ fn download_with(
     let (mut done, total, append);
     if r.status == 206 && resume_from > 0 {
         (done, total, append) = (resume_from, r.range_total, true);
-        println!("    server: {host}  (resuming at {})", fmt_size(done));
+        let msg = format!("server: {host}  (resuming at {})", fmt_size(done));
+        println!("    {}", dim(&msg));
     } else {
         resume_from = 0;
         (done, total, append) = (0, r.content_length, false);
-        println!("    server: {host}");
+        println!("    {}", dim(&format!("server: {host}")));
     }
 
     // Refuse before writing instead of failing at the last gigabyte: a .part
@@ -348,6 +367,38 @@ fn extract_img(zpath: &Path, out: &Path) -> Result<()> {
     res
 }
 
+/// When the stick has no room for the new version next to the old one, the
+/// old one goes first: ISOs can be fetched again, and a stick filled to the
+/// brim would otherwise never update. A same-name update counts too, since the
+/// .part grows next to the file it replaces.
+fn make_room_for_update(
+    dest: &Path,
+    old: Option<&str>,
+    path: &Path,
+    remote: Option<u64>,
+    free: Option<u64>,
+) -> Result<()> {
+    let (Some(old), Some(size), Some(free)) = (old, remote, free) else {
+        return Ok(());
+    };
+    let old_path = dest.join(old);
+    let Ok(old_md) = fs::metadata(&old_path) else {
+        return Ok(());
+    };
+    let have = fs::metadata(part_of(path)).map(|m| m.len()).unwrap_or(0);
+    let need = size.saturating_sub(have);
+    if need > free && need <= free + old_md.len() {
+        println!(
+            "    {}",
+            dim(&format!(
+                "no room for both versions -- removing old {old} first"
+            ))
+        );
+        fs::remove_file(&old_path)?;
+    }
+    Ok(())
+}
+
 /// Update-check -> (mirror race) -> checksum -> download -> record.
 /// Under --dry-run it stops after the check and reports what it would do.
 /// `checked` is a check_update() result the caller already has.
@@ -365,12 +416,12 @@ pub fn fetch_tracked(
     checked: Option<Check>,
 ) {
     if let Err(e) = check_name(name) {
-        println!("==> {label:<24} FAILED: {e}\n");
+        println!("    {}", red(&format!("{label}: FAILED: {e}")));
         summary.push((name.into(), format!("FAIL: {e}")));
         return;
     }
     let old = manifest::entry_filename(manifest, key).map(str::to_owned);
-    let Check { need, reason, meta } = if args.force {
+    let Check { need, meta, .. } = if args.force {
         Check {
             need: true,
             reason: "forced".into(),
@@ -379,7 +430,6 @@ pub fn fetch_tracked(
     } else {
         checked.unwrap_or_else(|| manifest::check_update(dest, manifest.get(key), url, name))
     };
-    println!("==> {label:<24} {name}  [{reason}]");
     if args.dry_run {
         // Nothing is written in a dry run, manifest included.
         summary.push((
@@ -391,7 +441,6 @@ pub fn fetch_tracked(
             }
             .into(),
         ));
-        println!();
         return;
     }
     if !need {
@@ -405,10 +454,10 @@ pub fn fetch_tracked(
         if let Ok(md) = fs::metadata(&part)
             && fs::remove_file(&part).is_ok()
         {
-            println!("    removed stale partial ({})", fmt_size(md.len()));
+            let msg = format!("{label}: removed stale partial ({})", fmt_size(md.len()));
+            println!("  {}", dim(&msg));
         }
         summary.push((name.into(), "SKIP (up to date)".into()));
-        println!();
         return;
     }
     let res = (|| -> Result<()> {
@@ -440,9 +489,6 @@ pub fn fetch_tracked(
             );
             url = primary.to_string();
         }
-        if expected.is_none() && !args.no_verify {
-            println!("    no published checksum -- size check only");
-        }
         let path = dest.join(name);
         // A .part always resumes: for a fixed-name image it is almost always an
         // interrupted attempt at this very build, and throwing it away would
@@ -450,25 +496,35 @@ pub fn fetch_tracked(
         // shortcut: a .part from a build that was itself replaced before the
         // resume is not detected unless sums are published (size alone matches);
         // store the remote size/mtime next to the .part if that ever bites.
+        make_room_for_update(
+            dest,
+            old.as_deref(),
+            &path,
+            meta.as_ref().and_then(|m| m.size),
+            free_space(dest),
+        )?;
         download(&url, &path, expected.as_deref())?;
         if let Some(old) = old.as_deref().filter(|&o| o != name) {
             let old_path = dest.join(old);
             if old_path.exists() {
                 fs::remove_file(old_path)?;
-                println!("    removed old {old}");
+                println!("    {}", dim(&format!("removed old {old}")));
             }
         }
-        println!(
-            "    ok  ({:.2} GB)\n",
-            fs::metadata(&path)?.len() as f64 / (1u64 << 30) as f64
-        );
+        let how = match (&expected, args.no_verify) {
+            (Some(_), _) => "sha256 verified",
+            (None, true) => "not verified (--no-verify)",
+            (None, false) => "size checked, no published checksum",
+        };
+        let size = fs::metadata(&path)?.len() as f64 / (1u64 << 30) as f64;
+        println!("    {}", green(&format!("done ({size:.2} GiB), {how}")));
         manifest::try_record_version(dest, manifest, key, &url, name, meta.as_ref())?;
         Ok(())
     })();
     match res {
         Ok(()) => summary.push((name.into(), "OK (updated)".into())),
         Err(e) => {
-            println!("    FAILED: {e:#}\n");
+            println!("    {}", red(&format!("FAILED: {e:#}")));
             summary.push((name.into(), format!("FAIL: {e:#}")));
         }
     }
@@ -692,5 +748,34 @@ mod tests {
     #[test]
     fn free_space_reports_something() {
         assert!(free_space(&std::env::temp_dir()).is_some_and(|n| n > 0));
+    }
+
+    /// The old version is removed only when that is what makes the new one fit.
+    #[test]
+    fn old_version_goes_first_only_when_needed() {
+        let d = tmpdir("makeroom");
+        let old = d.join("x-1.iso");
+        let new = d.join("x-2.iso");
+        let reset = || fs::write(&old, vec![0u8; 100]).unwrap();
+        reset();
+        // Enough room for both: keep the old one until the new one is in.
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), Some(200)).unwrap();
+        assert!(old.exists());
+        // Only fits once the old one is gone.
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), Some(60)).unwrap();
+        assert!(!old.exists());
+        reset();
+        // Does not fit even then: deleting would only lose the old one.
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(500), Some(60)).unwrap();
+        assert!(old.exists());
+        // A .part already on disk counts as written.
+        fs::write(part_of(&new), vec![0u8; 100]).unwrap();
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), Some(60)).unwrap();
+        assert!(old.exists());
+        // Unknown remote size or free space: never guess.
+        make_room_for_update(&d, Some("x-1.iso"), &new, None, Some(0)).unwrap();
+        make_room_for_update(&d, Some("x-1.iso"), &new, Some(150), None).unwrap();
+        assert!(old.exists());
+        fs::remove_dir_all(&d).unwrap();
     }
 }
