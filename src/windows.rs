@@ -6,6 +6,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -503,6 +504,11 @@ fn match_score(fname: &str, win: &str, lang: &str) -> u32 {
 }
 
 const WATCH_POLL: Duration = Duration::from_secs(2); // between folder scans
+
+/// Set while the download watch runs: Ctrl+C then only ends the watch
+/// (app's handler sets STOP_WATCH) instead of the whole program.
+pub static WATCHING: AtomicBool = AtomicBool::new(false);
+pub static STOP_WATCH: AtomicBool = AtomicBool::new(false);
 const WATCH_STABLE: Duration = Duration::from_secs(3); // size held this long = finished
 const WATCH_HEARTBEAT: Duration = Duration::from_secs(60); // between "still waiting" notes
 
@@ -534,9 +540,10 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
     let started = Instant::now();
     let deadline = started + Duration::from_secs(wait_min * 60);
     let mut next_beat = started + WATCH_HEARTBEAT;
+    STOP_WATCH.store(false, Ordering::SeqCst);
+    WATCHING.store(true, Ordering::SeqCst);
     while !pending.is_empty() && Instant::now() < deadline {
-        // Ctrl+C: the handler sets the abort flag instead of ending the program.
-        if crate::net::aborted() {
+        if STOP_WATCH.load(Ordering::SeqCst) {
             println!("\n  (stopped watching)");
             break;
         }
@@ -617,6 +624,7 @@ fn windows_watch_rename(dest: &Path, manifest: &mut Manifest, plan: Vec<Plan>, s
         }
         thread::sleep(WATCH_POLL);
     }
+    WATCHING.store(false, Ordering::SeqCst);
 
     for e in pending {
         summary.push((e.target, "MANUAL (still missing)".into()));

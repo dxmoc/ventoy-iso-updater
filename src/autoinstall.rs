@@ -123,9 +123,18 @@ pub fn sync_auto_install(dest: &Path, manifest: &Manifest, args: &Args) {
 
 fn sync(dest: &Path, manifest: &Manifest, dry_run: bool, wins: &[(&str, &str)]) {
     let path = dest.join("ventoy").join("ventoy.json");
-    let mut config: Value = fs::read_to_string(&path).ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| Value::Object(Map::new()));
+    // A file that exists but does not parse is the user's and stays untouched:
+    // rewriting it as {"auto_install": ...} would drop the rest of their config.
+    let mut config: Value = match fs::read_to_string(&path) {
+        Err(_) => Value::Object(Map::new()),
+        Ok(text) => match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("\nventoy.json does not parse ({e}) -- leaving it alone.");
+                return;
+            }
+        },
+    };
     let Value::Object(config) = &mut config else {
         println!("\nventoy.json is not a JSON object -- leaving it alone.");
         return;

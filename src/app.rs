@@ -81,6 +81,18 @@ const MEMTEST_IMG: &str = "memtest86-usb.img";
 pub fn run() -> i32 {
     // Parsing first, so --help/--version exit without the send-off line.
     let args = Args::parse();
+    // Ctrl+C during the Windows download watch only ends the watch; anywhere
+    // else it stops queued lookups and exits. Partial downloads stay as .part
+    // and resume next run.
+    let _ = ctrlc::set_handler(|| {
+        if windows::WATCHING.load(Ordering::SeqCst) {
+            windows::STOP_WATCH.store(true, Ordering::SeqCst);
+        } else {
+            net::abort();
+            println!("\nAborted.");
+            std::process::exit(1);
+        }
+    });
     let code = run_with(args);
     farewell();
     code
