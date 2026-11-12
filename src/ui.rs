@@ -14,6 +14,7 @@ use crate::net::fmt_size;
 /// Leave cleanly from an interactive menu: nothing has been written yet.
 pub fn quit() -> ! {
     println!("Nothing written.");
+    crate::app::farewell();
     std::process::exit(0)
 }
 

@@ -91,6 +91,7 @@ pub fn run() -> i32 {
             net::abort();
             download::remove_temps();
             println!("\nAborted.");
+            farewell();
             std::process::exit(1);
         }
     });
@@ -117,7 +118,7 @@ fn pause_if_own_console() {
 }
 
 /// Parting line, italic only on a real terminal so piped output stays clean.
-fn farewell() {
+pub(crate) fn farewell() {
     let msg = "See you Space Cowboy!";
     if std::io::stdout().is_terminal() {
         println!("\n\x1b[3m{msg}\x1b[0m");
