@@ -278,6 +278,14 @@ pub fn detect_usb_drives() -> Vec<Drive> {
     drives
 }
 
+/// Mounts the running system boots from. Unraid and some appliances boot
+/// from a USB stick mounted at /boot, which is removable -- offering it as the
+/// default target would write ISOs onto the OS flash.
+#[cfg(not(windows))]
+fn is_system_mount(mnt: &str) -> bool {
+    matches!(mnt, "/" | "/efi" | "/boot") || mnt.starts_with("/boot/")
+}
+
 /// Removable drives, best-effort.
 #[cfg(unix)]
 pub fn detect_usb_drives() -> Vec<Drive> {
@@ -291,6 +299,7 @@ pub fn detect_usb_drives() -> Vec<Drive> {
     for (device, mnt, _) in proc_mounts() {
         if !device.starts_with("/dev/")
             || seen.contains(&mnt)
+            || is_system_mount(&mnt)
             || !block_is_removable(&device, Path::new("/sys/block"))
         {
             continue;
@@ -375,6 +384,17 @@ mod tests {
                 std::path::Path::new(&path).is_dir(),
                 "{path} is offered but is not a directory"
             );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn system_mounts_are_never_offered() {
+        for m in ["/", "/boot", "/boot/efi", "/efi"] {
+            assert!(is_system_mount(m), "{m}");
+        }
+        for m in ["/media/me/Ventoy", "/run/media/me/VENTOY", "/bootstick"] {
+            assert!(!is_system_mount(m), "{m}");
         }
     }
 
