@@ -294,7 +294,7 @@ fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> V
     }
 
     let entry = |key: &str, head: String, what: &str, mark: String| {
-        println!("  [{key}] {head:<33}{}{mark}", dim(what));
+        println!("  [{key}] {head:<36} {}{mark}", dim(what));
     };
     let preset = |key, p, name: &str, what| {
         let items = preset_items(p);
@@ -361,7 +361,15 @@ fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> V
         );
     }
     println!();
-    let default = if room.is_some() { "0" } else { "1" };
+    // A filled stick defaults to refreshing what is there: a fresh preset or
+    // fit would queue ISOs the user never picked.
+    let default = if !installed.is_empty() {
+        "6"
+    } else if room.is_some() {
+        "0"
+    } else {
+        "1"
+    };
     let choice = ask(&format!("Select [{default}]: ")).to_lowercase();
     let choice = if choice.is_empty() { default } else { &choice };
 

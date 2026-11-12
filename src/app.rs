@@ -478,7 +478,8 @@ fn print_summary(summary: &Summary, dest: &Path) {
     // Up-to-date items only count; everything else gets a line.
     let shown: Vec<_> = summary
         .iter()
-        .filter(|(_, s)| !s.starts_with("SKIP (up to date)"))
+        // Up to date only counts; WOULD DOWNLOAD is already in the plan above.
+        .filter(|(_, s)| !s.starts_with("SKIP (up to date)") && !s.starts_with("WOULD"))
         .collect();
     if !shown.is_empty() {
         println!("\n{}", bold("Summary"));
