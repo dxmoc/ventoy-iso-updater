@@ -1,10 +1,11 @@
-__pycache__/
-*.py[cod]
 .direnv/
 
-# Output of the script -- never belongs in the repo
+# Output of the program -- never belongs in the repo
 *.iso
 *.img
 *.part
 ventoy_versions.json
 isos/
+
+# Rust build output
+/target/
