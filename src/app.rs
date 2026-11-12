@@ -95,7 +95,24 @@ pub fn run() -> i32 {
     });
     let code = run_with(args);
     farewell();
+    pause_if_own_console();
     code
+}
+
+/// Started by double-click, Windows gives the program its own console and
+/// closes it on exit, taking the summary with it. Only then wait for Enter.
+fn pause_if_own_console() {
+    #[cfg(windows)]
+    {
+        let mut pids = [0u32; 2];
+        let n = unsafe {
+            windows_sys::Win32::System::Console::GetConsoleProcessList(pids.as_mut_ptr(), 2)
+        };
+        if n == 1 && std::io::stdin().is_terminal() {
+            println!("Press Enter to close this window.");
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
+    }
 }
 
 /// Parting line, italic only on a real terminal so piped output stays clean.
