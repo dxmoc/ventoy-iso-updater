@@ -221,9 +221,9 @@ pub fn fedora_iso_with(get: Get, edition: &str, iso_regex: &str) -> Result<(Stri
                 // shortcut: a moved edition path also answers 404 and lands here;
                 // the warning keeps it visible. Tighten if that ever happens.
                 Some(code @ (403 | 404)) if num != last => {
-                    println!(
-                        "    Fedora {num} {edition} not public yet (HTTP {code}), using {last}"
-                    );
+                    crate::style::note(format!(
+                        "Fedora {num} {edition} not public yet (HTTP {code}), using {last}"
+                    ));
                 }
                 _ => return Err(e),
             },
@@ -795,10 +795,10 @@ pub fn freebsd_with(get: Get) -> Result<(String, String)> {
     };
     let (base, html) = listing(&dirs[0])?;
     pick_latest(&base, &html, rgx).or_else(|_| {
-        println!(
-            "    FreeBSD {} has no RELEASE image yet, using {}",
+        crate::style::note(format!(
+            "FreeBSD {} has no RELEASE image yet, using {}",
             dirs[0], dirs[1]
-        );
+        ));
         let (base, html) = listing(&dirs[1])?;
         pick_latest(&base, &html, rgx)
     })

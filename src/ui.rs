@@ -5,11 +5,14 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use crate::app::{Args, Preset, WinMethod};
-use crate::catalog::{Item, Kind, catalog, preset_items};
+use crate::catalog::{
+    Item, Kind, Tier, catalog, find, fit, preset_items, stick_size_for, total_bytes,
+};
 use crate::cleanup::{print_inventory, stick_inventory};
 use crate::drives::{detect_usb_drives, wsl_unmounted_drives};
 use crate::manifest::Manifest;
 use crate::net::fmt_size;
+use crate::style::{bold, dim, yellow};
 
 /// Leave cleanly from an interactive menu: nothing has been written yet.
 pub fn quit() -> ! {
@@ -156,7 +159,7 @@ fn custom_select(
     let mut last = None;
     for (i, it) in cat.iter().enumerate() {
         if last != Some(it.category) {
-            println!("\n  == {} ==", it.category);
+            println!("\n  {}", bold(&format!("== {} ==", it.category)));
             last = Some(it.category);
         }
         let mark = if preselect.contains(it.key) { 'x' } else { ' ' };
@@ -169,7 +172,7 @@ fn custom_select(
             "   [{mark}] {have} {:2}  {:<24} {}",
             i + 1,
             it.label,
-            it.desc
+            dim(it.desc)
         );
     }
 
@@ -184,59 +187,192 @@ fn custom_select(
         .collect()
 }
 
-/// Top-level 'Standard / Advanced / Everything / Custom' menu. Returns the
-/// selected catalog items in catalog order.
+/// Room on the volume holding `dest`: (capacity, free, budget, fitting set).
+/// The budget adds what catalog items already there take: they stay or get
+/// replaced. Windows ISOs stay too, but no preset touches them.
+fn stick_room(
+    dest: &Path,
+    installed: &BTreeMap<String, (String, u64)>,
+) -> Option<(u64, u64, u64, Vec<&'static Item>)> {
+    // A dry run does not create dest, so ask the nearest folder that exists.
+    let dir = dest.ancestors().find(|p| p.is_dir())?;
+    let free = crate::download::free_space(dir)?;
+    let total = crate::drives::mount_total(&dir.to_string_lossy());
+    let have: Vec<&str> = installed
+        .keys()
+        .map(String::as_str)
+        .filter(|k| find(k).is_some_and(|it| it.tier != Tier::Windows))
+        .collect();
+    let budget = free + have.iter().map(|k| installed[*k].1).sum::<u64>();
+    Some((total, free, budget, fit(budget, &have)))
+}
+
+fn gb(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
+}
+
+/// Top-level 'Fit / Standard / Advanced / Everything / Custom' menu. Returns
+/// the selected catalog items in catalog order. A selection that will not fit
+/// is flagged; interactively it can be redone, under --preset it only warns
+/// (each download refuses on its own once space runs out).
 pub fn choose_selection(
     preset: Option<Preset>,
     dest: &Path,
     manifest: &Manifest,
 ) -> Vec<&'static Item> {
+    let interactive = matches!(preset, None | Some(Preset::Custom));
+    loop {
+        let selection = pick_selection(preset, dest, manifest);
+        if fits_or_confirmed(&selection, dest, manifest, interactive) {
+            return selection;
+        }
+    }
+}
+
+/// Warn when what still has to be downloaded exceeds the free space. Items on
+/// the stick count as nothing: they are replaced in place (approx). True to go on.
+fn fits_or_confirmed(
+    selection: &[&'static Item],
+    dest: &Path,
+    manifest: &Manifest,
+    interactive: bool,
+) -> bool {
+    let installed = stick_inventory(dest, manifest).installed;
+    let Some((total, free, _, _)) = stick_room(dest, &installed) else {
+        return true;
+    };
+    let new: Vec<&Item> = selection
+        .iter()
+        .copied()
+        .filter(|it| !installed.contains_key(it.key))
+        .collect();
+    let need = total_bytes(&new);
+    if need <= free {
+        return true;
+    }
+    let msg = format!(
+        "Your selection needs ~{:.0} GB, the stick has {:.0} GB free.",
+        need as f64 / 1e9,
+        free as f64 / 1e9
+    );
+    println!("\n{}", yellow(&msg));
+    // Everything already on the stick stays, so the new stick holds both.
+    let whole = need + total.saturating_sub(free);
+    let size = stick_size_for(whole).unwrap_or("more than 1 TB");
+    println!("{}", yellow(&format!("Recommended stick size: {size}")));
+    !interactive
+        || matches!(
+            ask("Continue anyway? [y/N]: ").to_lowercase().as_str(),
+            "y" | "yes" | "j" | "ja"
+        )
+}
+
+fn pick_selection(preset: Option<Preset>, dest: &Path, manifest: &Manifest) -> Vec<&'static Item> {
     let none = HashSet::new();
-    match preset {
-        Some(Preset::Custom) => return custom_select(&none, dest, manifest),
-        Some(p) => return preset_items(p),
-        None => {}
+    if preset == Some(Preset::Custom) {
+        return custom_select(&none, dest, manifest);
     }
     let installed = stick_inventory(dest, manifest).installed;
+    let room = stick_room(dest, &installed);
+    match (preset, &room) {
+        (Some(Preset::Fit), Some((total, free, _, set))) => {
+            println!(
+                "Stick: {}, {} free -> {} items, ~{:.0} GB",
+                gb(*total),
+                gb(*free),
+                set.len(),
+                total_bytes(set) as f64 / 1e9
+            );
+            return set.clone();
+        }
+        (Some(Preset::Fit), None) => {
+            println!("Cannot read the free space of {}.", dest.display());
+            return Vec::new();
+        }
+        (Some(p), _) => return preset_items(p),
+        (None, _) => {}
+    }
 
-    let count = |p| preset_items(p).len();
-    println!("\nWhat should go on the stick?\n");
-    println!(
-        "  [1] Standard    ({:2} items)  one solid pick per job",
-        count(Preset::Standard)
+    let entry = |key: &str, head: String, what: &str, mark: String| {
+        println!("  [{key}] {head:<33}{}{mark}", dim(what));
+    };
+    let preset = |key, p, name: &str, what| {
+        let items = preset_items(p);
+        let size = total_bytes(&items);
+        let mark = match &room {
+            Some((_, _, budget, _)) if size > *budget => yellow(&format!(
+                "  needs a {} stick",
+                stick_size_for(size).unwrap_or("bigger")
+            )),
+            _ => String::new(),
+        };
+        let head = format!(
+            "{name:<11}({} items, ~{:.0} GB)",
+            items.len(),
+            size as f64 / 1e9
+        );
+        entry(key, head, what, mark);
+    };
+    println!();
+    if let Some((total, free, _, _)) = &room {
+        println!("Stick: {}, {} free", gb(*total), gb(*free));
+    }
+    println!("{}\n", bold("What should go on the stick?"));
+    if let Some((_, _, _, set)) = &room {
+        let head = format!(
+            "Fit this stick ({} ISOs, ~{:.0} GB)",
+            set.len(),
+            total_bytes(set) as f64 / 1e9
+        );
+        entry("0", head, "the best mix that fits", String::new());
+    }
+    preset("1", Preset::Standard, "Standard", "one solid pick per job");
+    preset(
+        "2",
+        Preset::Advanced,
+        "Advanced",
+        "+ sibling releases & more tools",
     );
-    println!(
-        "  [2] Advanced    ({:2} items)  + sibling releases & more tools",
-        count(Preset::Advanced)
+    preset(
+        "3",
+        Preset::Everything,
+        "Everything",
+        "+ niche and legacy items",
     );
-    println!(
-        "  [3] Everything  ({:2} items)  + niche and legacy items",
-        count(Preset::Everything)
+    entry("4", "Custom".into(), "pick individually", String::new());
+    entry(
+        "5",
+        "Custom from Standard".into(),
+        "start with Standard, then adjust",
+        String::new(),
     );
-    println!("  [4] Custom                 pick individually");
-    println!("  [5] Custom from Standard   start with Standard, then adjust");
     println!("  [q] quit");
     if !installed.is_empty() {
-        println!(
-            "  [6] Update what's there ({:2} items)  keep the current set, just refresh it",
-            installed.len()
+        entry(
+            "6",
+            format!("Update what's there ({} items)", installed.len()),
+            "keep the current set, just refresh it",
+            String::new(),
         );
         println!(
             "\n  -> Been here before? Take [6] first: it brings the stick up to date without\n     \
-                  adding anything new. Only picking a preset on a stick this script has\n     \
+                  adding anything new. Only picking a preset on a stick this program has\n     \
                   already filled risks queueing ISOs you never wanted."
         );
     }
     println!();
-    let choice = ask("Select [1]: ").to_lowercase();
+    let default = if room.is_some() { "0" } else { "1" };
+    let choice = ask(&format!("Select [{default}]: ")).to_lowercase();
+    let choice = if choice.is_empty() { default } else { &choice };
 
-    match choice.as_str() {
-        "q" => quit(),
-        "" | "1" => preset_items(Preset::Standard),
-        "2" => preset_items(Preset::Advanced),
-        "3" => preset_items(Preset::Everything),
-        "4" => custom_select(&none, dest, manifest),
-        "5" => {
+    match (choice, room) {
+        ("q", _) => quit(),
+        ("0", Some((_, _, _, set))) => set,
+        ("1", _) => preset_items(Preset::Standard),
+        ("2", _) => preset_items(Preset::Advanced),
+        ("3", _) => preset_items(Preset::Everything),
+        ("4", _) => custom_select(&none, dest, manifest),
+        ("5", _) => {
             let std: HashSet<&str> = preset_items(Preset::Standard)
                 .iter()
                 .map(|it| it.key)
@@ -245,7 +381,7 @@ pub fn choose_selection(
         }
         // Start from what the stick holds: the usual "just bring my stick up
         // to date" case, still adjustable before it runs.
-        "6" if !installed.is_empty() => custom_select(
+        ("6", _) if !installed.is_empty() => custom_select(
             &installed.keys().map(String::as_str).collect(),
             dest,
             manifest,

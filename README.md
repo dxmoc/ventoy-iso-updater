@@ -44,6 +44,7 @@ stick and keeps every record and template assignment.
 ventoy-iso-updater                 # interactive: pick drive, then ISOs
 ventoy-iso-updater --dest E:\      # explicit target
 ventoy-iso-updater --dry-run       # report only, write nothing
+ventoy-iso-updater --preset fit    # the best set for the stick's size
 ventoy-iso-updater --force         # ignore the manifest, redownload
 ```
 
@@ -85,6 +86,15 @@ which of the two it got. `--no-verify` turns it off.
 what would be downloaded, skipped or deleted, and writes nothing at all -- no
 ISOs, no manifest, not even the target folder.
 
+**Fits the stick.** The menu shows the stick's capacity and free space and
+offers *"Fit this stick"* first: the best set that fits, from an 8 GB stick
+(a desktop, a server, a rescue kit and MemTest86) up to the whole catalog on
+256 GB. It fills tier by tier (Standard, then Advanced, then Extra), one item per
+category per round, so every kind of tool is covered before anything gets a
+second pick; what is already on the stick is kept and counts as free room, and
+5 % stays free. Presets that would not fit are marked. Sizes come from the
+catalog and are approximate. `--preset fit` does the same without the menu.
+
 **Shows you what is on the stick** before you pick anything -- item, exact
 filename, size -- and marks those entries in the picker, so nothing gets
 selected twice. If the stick already holds something, the menu offers
@@ -98,7 +108,7 @@ one next to the file that superseded it, and deletes them once you confirm
 **~60 items in the catalog**, grouped by family: desktop distros, the official
 Ubuntu flavours, server/enterprise (including the Proxmox products and XCP-ng),
 security, rescue tools, BSD. Pick a preset
-(Standard / Advanced / Everything) or individual numbers and ranges like
+(Fit / Standard / Advanced / Everything) or individual numbers and ranges like
 `1,3,5-9`, `+12`, `-4`.
 
 **Downloads with resume support** (HTTP Range), showing the serving host and
@@ -109,6 +119,12 @@ used -- disable with `--no-mirror-test`. The SHA-256 always comes from the
 primary; a mirror whose own checksum disagrees is dropped. An image that
 would not fit in the free space is refused before the download starts, instead
 of filling the stick and failing at the end.
+
+**Quiet output.** Version checks run as one live counter, followed by a short
+plan (what will be downloaded, how many are current, what failed). Only items
+that really download print anything after that, and the summary lists only
+what changed or needs attention. Colors are used on a terminal only and are
+off with `NO_COLOR` set.
 
 **Update notice:** at startup the program asks the GitHub API whether a newer
 release of itself is out and prints a link if so. It downloads and changes
@@ -163,7 +179,7 @@ are treated as hand-written and left alone, as is the rest of the file.
 | `--force` | re-download everything, ignoring the manifest |
 | `--no-verify` | skip the SHA-256 check |
 | `--version` | print the version and exit |
-| `--preset standard\|advanced\|everything\|custom` | skip the menu |
+| `--preset standard\|advanced\|everything\|fit\|custom` | skip the menu; `fit` picks what fits the target's free space |
 | `--cleanup ask\|yes\|no` | what to do with superseded ISOs (default `ask`) |
 | `--no-mirror-test` | skip the fastest-mirror speed test |
 | `--no-update-check` | don't ask GitHub for a newer release at startup |
