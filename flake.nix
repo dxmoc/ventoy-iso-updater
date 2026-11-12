@@ -1,5 +1,5 @@
 {
-  description = "A Nix-flake-based Python development environment";
+  description = "Keeps the ISOs on a Ventoy stick up to date";
 
   inputs.nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1"; # unstable Nixpkgs
 
@@ -25,39 +25,19 @@
           }
         );
 
-      pythonVersion = "3.13";
+      # Single source of truth for the version: Cargo.toml.
+      cargoToml = lib.importTOML ./Cargo.toml;
     in
     {
       packages = forEachSupportedSystem (
         { pkgs, system }:
         let
-          concatMajorMinor =
-            v:
-            lib.pipe v [
-              lib.versions.splitVersion
-              (lib.sublist 0 2)
-              lib.concatStrings
-            ];
-
-          python = pkgs."python${concatMajorMinor pythonVersion}";
-
-          ventoy-iso-updater = pkgs.stdenvNoCC.mkDerivation {
-            pname = "ventoy-iso-updater";
-            version = "v0.10.0";
-
+          ventoy-iso-updater = pkgs.rustPlatform.buildRustPackage {
+            pname = cargoToml.package.name;
+            inherit (cargoToml.package) version;
             src = ./.;
-
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-
-            dontBuild = true;
-            dontConfigure = true;
-
-            installPhase = ''
-              install -Dm755 update_ventoy_isos.py $out/bin/ventoy-iso-updater
-              wrapProgram $out/bin/ventoy-iso-updater \
-                --argv0 ventoy-iso-updater \
-                --prefix PATH : ${lib.makeBinPath [ python ]}
-            '';
+            cargoLock.lockFile = ./Cargo.lock;
+            meta.mainProgram = "ventoy-iso-updater";
           };
         in
         {
@@ -79,43 +59,16 @@
 
       devShells = forEachSupportedSystem (
         { pkgs, system }:
-        let
-          concatMajorMinor =
-            v:
-            lib.pipe v [
-              lib.versions.splitVersion
-              (lib.sublist 0 2)
-              lib.concatStrings
-            ];
-
-          python = pkgs."python${concatMajorMinor pythonVersion}";
-        in
         {
-          default = pkgs.mkShellNoCC {
-            venvDir = ".venv";
-
-            postShellHook = ''
-              venvVersionWarn() {
-              	local venvVersion
-              	venvVersion="$("$venvDir/bin/python" -c 'import platform; print(platform.python_version())')"
-
-              	[[ "$venvVersion" == "${python.version}" ]] && return
-
-              	cat <<EOF
-              Warning: Python version mismatch: [$venvVersion (venv)] != [${python.version}]
-                       Delete '$venvDir' and reload to rebuild for version ${python.version}
-              EOF
-              }
-
-              venvVersionWarn
-            '';
-
-            packages =
-              (with python.pkgs; [
-                venvShellHook
-                pip
-              ])
-              ++ [ self.formatter.${system} ];
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              rustc
+              clippy
+              rustfmt
+              rust-analyzer
+              self.formatter.${system}
+            ];
           };
         }
       );

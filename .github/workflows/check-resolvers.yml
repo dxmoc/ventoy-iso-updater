@@ -8,8 +8,8 @@ name: checks
 #
 # Drive detection and the ventoy.json rewriting are where the platforms
 # actually differ: Win32 API, /sys, or /Volumes depending on where they run,
-# and a case-insensitive filesystem underneath. Those run everywhere the script
-# claims to support, offline.
+# and a case-insensitive filesystem underneath. Those unit tests run everywhere
+# the program claims to support, offline.
 
 on:
   push:
@@ -20,46 +20,38 @@ on:
     - cron: "0 5 * * 1"
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   platform:
     name: platform (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        # Pinned: ubuntu-latest moved to 26.04, which has no Python 3.9 build.
-        os: [ubuntu-24.04, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          # The script targets 3.6+, but the runners no longer ship anything
-          # below 3.9. This still catches syntax and stdlib usage newer than
-          # 3.9; the 3.6-3.8 window is untested.
-          python-version: "3.9"
-
-      - name: Compile
-        run: python -m compileall -q update_ventoy_isos.py tests/
-
-      - name: Drive detection and ventoy.json handling
-        run: python tests/check_platform.py
+      - run: rustup component add clippy rustfmt
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Offline tests
+        run: cargo test --locked
 
   resolvers:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.9"
-
       - name: Resolve every catalog entry
         # Runners share outbound IPs, so the 60/hour anonymous GitHub API
         # budget is often already spent by the time this job starts. The
-        # script picks the token up from the environment.
+        # program picks the token up from the environment.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python tests/check_resolvers.py
+        run: cargo test --locked --test resolvers -- --ignored --nocapture
