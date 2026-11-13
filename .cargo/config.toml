@@ -1,0 +1,5 @@
+# Link the MSVC C runtime statically. Without it the Windows binary imports
+# VCRUNTIME140.dll, which a fresh Windows install does not have, and the
+# program dies on start with 0xC0000135.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
