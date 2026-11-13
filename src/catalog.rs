@@ -857,13 +857,14 @@ const FIT_FIRST: &[&str] = &[
     "clonezilla",
 ];
 
-/// The set that fits `budget` bytes (keeping 5 % headroom). First what is
-/// already on the stick (`have`: it stays there either way) and MemTest86, then
+/// The set that fits a stick of `total` bytes holding `fixed` bytes of other
+/// files, keeping 5 % of the whole stick free (the same rule as the size
+/// warning). First what is already on the stick (`have`: it stays there either way) and MemTest86, then
 /// tier by tier, one item per category per round in catalog order, so a small
 /// stick gets a desktop, a server and a rescue tool before seconds of anything.
 /// Windows never. Returned in catalog order.
-pub fn fit(budget: u64, have: &[&str]) -> Vec<&'static Item> {
-    let mut left = budget / 100 * 95;
+pub fn fit(total: u64, fixed: u64, have: &[&str]) -> Vec<&'static Item> {
+    let mut left = (total / 100 * 95).saturating_sub(fixed);
     let mut add = |it: &Item, force: bool| {
         let size = u64::from(it.size_mb) * 1_000_000;
         let fits = size <= left;
@@ -968,7 +969,7 @@ mod tests {
         for gb in [8u64, 16, 32, 64, 128] {
             // What an exFAT-formatted stick of that size has free.
             let budget = gb * 1_000_000_000 / 100 * 97;
-            let set = fit(budget, &[]);
+            let set = fit(budget, 0, &[]);
             let keys: Vec<_> = set.iter().map(|it| it.key).collect();
             println!(
                 "{gb:>3} GB: {:>2} items, {:>5.1} GB  {keys:?}",
@@ -991,21 +992,24 @@ mod tests {
                 );
             }
         }
-        assert!(fit(0, &[]).is_empty());
+        assert!(fit(0, 0, &[]).is_empty());
+        // Other files on the stick come off the 95 %, not the headroom.
+        let (total, fixed) = (84_700_000_000, 31_100_000_000);
+        assert!(total_bytes(&fit(total, fixed, &[])) + fixed <= total / 100 * 95);
         assert_eq!(
-            fit(u64::MAX / 2, &[]).len(),
+            fit(u64::MAX / 2, 0, &[]).len(),
             preset_items(Preset::Everything).len()
         );
         // What is on the stick is always in, even an Extra item that alone
         // exceeds the budget; Windows never.
-        let keys: Vec<_> = fit(3_000_000_000, &["slackware", "win11_de"])
+        let keys: Vec<_> = fit(3_000_000_000, 0, &["slackware", "win11_de"])
             .iter()
             .map(|it| it.key)
             .collect();
         assert_eq!(keys, ["slackware"]);
         // Small sticks get the beginner desktop first.
         assert!(
-            fit(8_000_000_000 / 100 * 97, &[])
+            fit(8_000_000_000 / 100 * 97, 0, &[])
                 .iter()
                 .any(|it| it.key == "mint")
         );

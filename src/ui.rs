@@ -232,7 +232,7 @@ impl Room {
             .collect();
         let have_bytes: u64 = have.iter().map(|k| self.installed[*k].1).sum();
         let fixed = (self.total - self.free.min(self.total)).saturating_sub(have_bytes);
-        fit(self.total.saturating_sub(fixed), &have)
+        fit(self.total, fixed, &have)
     }
 }
 
