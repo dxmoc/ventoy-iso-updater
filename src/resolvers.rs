@@ -480,10 +480,22 @@ const DIR_REGEX: &str = r#"href="([\d.]+)/""#;
 
 /// Highest-versioned subdirectory of an autoindex, then the newest ISO inside
 /// it (optionally under a further `sub` path).
+///
+/// A version directory can be listed before the release is out (Rocky 10.3
+/// answered 403 for weeks), so fall back to the next older ones. Only on
+/// 403/404: a timeout must not quietly hand out the previous release.
 fn latest_subdir_iso(base: &str, iso_regex: &str, sub: &str, dir_regex: &str) -> Result<Resolved> {
-    let d = max_ver(find_all(dir_regex, &http_get(base)?)?)
-        .ok_or_else(|| anyhow!("no version dir at {base}"))?;
-    plain(latest_in_listing(&format!("{base}{d}/{sub}"), iso_regex))
+    let dirs = sorted_desc(find_all(dir_regex, &http_get(base)?)?);
+    let mut newest_err = anyhow!("no version dir at {base}");
+    for (i, d) in dirs.iter().take(3).enumerate() {
+        match latest_in_listing(&format!("{base}{d}/{sub}"), iso_regex) {
+            Ok(found) => return Ok(found.into()),
+            Err(e) if !matches!(net::http_status(&e), Some(403 | 404)) => return Err(e),
+            Err(e) if i == 0 => newest_err = e,
+            Err(_) => {}
+        }
+    }
+    Err(newest_err)
 }
 
 // ---- desktop distros ----
